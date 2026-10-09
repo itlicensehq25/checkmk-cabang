@@ -15,8 +15,8 @@ $ServerIP      = ""
 $WebPort       = "8080"
 $SiteName      = "cmk"
 $AgentVersion  = "2.5.0p14-1"
-$GithubUser    = "andin1st"
-$GithubRepo    = "scriptcmk"
+$GithubUser    = "itlicensehq25"
+$GithubRepo    = "checkmk-cabang"
 $Branch        = "main"
 
 # Manual Argument Parser (Sangat fleksibel untuk iex dan CLI)
