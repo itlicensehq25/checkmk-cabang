@@ -210,7 +210,31 @@ foreach ($script in $LocalChecks) {
     }
 }
 
-# 8. Setup RAM Health (Pengujian Memtester Dinamis 20% Free RAM - Setiap Sabtu 11:00 AM)
+# 8. Unduh plugin tambahan ke folder plugin Checkmk
+# Plugin bawaan tetap berada di folder instalasi Checkmk dan tidak disentuh.
+$PluginFolder = Join-Path $env:ProgramData "checkmk\agent\plugins"
+if (-not (Test-Path $PluginFolder)) {
+    New-Item -ItemType Directory -Force -Path $PluginFolder | Out-Null
+}
+
+$Plugins = @(
+    "mk_inventory.vbs",
+    "win_license.bat"
+)
+
+Write-Host "[-] Mengunduh 2 plugin tambahan ke $PluginFolder..." -ForegroundColor Yellow
+foreach ($plugin in $Plugins) {
+    $pluginUrl = "$BaseUrl/plugins/$plugin"
+    $destination = Join-Path $PluginFolder $plugin
+    try {
+        Invoke-WebRequest -Uri $pluginUrl -OutFile $destination -UseBasicParsing
+        Write-Host " -> [OK] Mengunduh plugin $plugin" -ForegroundColor Green
+    } catch {
+        Write-Warning "Gagal mengunduh plugin: $plugin dari $pluginUrl. Detail: $_"
+    }
+}
+
+# 9. Setup RAM Health (Pengujian Memtester Dinamis 20% Free RAM - Setiap Sabtu 11:00 AM)
 Write-Host "[-] Menyiapkan penjadwalan uji kesehatan RAM (Dinamis 20% Free RAM)..." -ForegroundColor Yellow
 
 $RamCheckScriptContent = @'
@@ -276,7 +300,7 @@ try {
     Write-Warning "Gagal mendaftarkan Scheduled Task untuk pengujian RAM: $_"
 }
 
-# 9. Deteksi Lokasi cmk-agent-ctl.exe
+# 10. Deteksi Lokasi cmk-agent-ctl.exe
 $ctlPath = "C:\Program Files (x86)\checkmk\service\cmk-agent-ctl.exe"
 if (-not (Test-Path $ctlPath)) {
     $ctlPath = "C:\Program Files\checkmk\service\cmk-agent-ctl.exe"
@@ -288,3 +312,4 @@ Write-Host "====================================================================
 Write-Host "Untuk mendaftarkan sertifikat keamanan agen (mTLS) ke server Checkmk, jalankan:" -ForegroundColor Cyan
 Write-Host " & `"$ctlPath`" register --hostname <NAMA_HOST> --server ${HostOnly}:8000 --site $SiteName --user cmkadmin" -ForegroundColor Yellow
 Write-Host "=====================================================================`n" -ForegroundColor Green
+
