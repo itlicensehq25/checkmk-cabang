@@ -178,6 +178,33 @@ for script in "${SCRIPTS[@]}"; do
     fi
 done
 
+# Download custom agent plugins from GitHub
+# Checkmk built-in plugins remain managed in the agent installation directory.
+PLUGINS_DIR="/usr/lib/check_mk_agent/plugins"
+mkdir -p "${PLUGINS_DIR}"
+chmod 755 "${PLUGINS_DIR}"
+
+PLUGINS=(
+    "mk_inventory.linux"
+)
+
+echo -e "\e[32m[INFO] Mengunduh plugin tambahan ke ${PLUGINS_DIR}...\e[0m"
+for plugin in "${PLUGINS[@]}"; do
+    PLUGIN_URL="${GITHUB_RAW_URL}/plugins/${plugin}"
+    TARGET_PATH="${PLUGINS_DIR}/${plugin}"
+    TEMP_PATH="${TARGET_PATH}.tmp"
+
+    echo "Mengunduh plugin: ${plugin}..."
+    if curl -sSfL -o "${TEMP_PATH}" "${PLUGIN_URL}"; then
+        mv -f "${TEMP_PATH}" "${TARGET_PATH}"
+        chmod 755 "${TARGET_PATH}"
+        echo -e "\e[32m[SUCCESS] Berhasil memasang plugin ${plugin}\e[0m"
+    else
+        rm -f "${TEMP_PATH}"
+        echo -e "\e[31m[WARNING] Gagal mengunduh plugin ${plugin} dari ${PLUGIN_URL}.\e[0m"
+    fi
+done
+
 # Setup Asynchronous Memtester Runner
 echo -e "\e[32m[INFO] Mengonfigurasi Runner Memtester Asinkron...\e[0m"
 RUNNER_PATH="/usr/local/bin/run_memtester.sh"
@@ -236,3 +263,4 @@ echo -e "\e[32m[SUCCESS] Instalasi Agen Checkmk Selesai!\e[0m"
 echo -e "\e[32mClient telah terdaftar di Cron Scheduler (Setiap Sabtu pukul 11:00 AM).\e[0m"
 echo -e "\e[32mPastikan untuk mendaftarkan host ini di server Checkmk Anda.\e[0m"
 echo -e "\e[32m===================================================\e[0m"
+
