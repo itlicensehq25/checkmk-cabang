@@ -132,13 +132,13 @@ if ($NeedUpdate) {
         }
 
         # Checkmk Status Thresholds
-        # OK >= 60%, WARNING <= 40%, CRITICAL <= 20%
+        # OK >= 60%, WARNING 21-59%, CRITICAL <= 20%
         $Status = 0
         $StatusTxt = "OK"
         if ($Health -le 20) {
             $Status = 2
             $StatusTxt = "Critical"
-        } elseif ($Health -le 40) {
+        } elseif ($Health -lt 60) {
             $Status = 1
             $StatusTxt = "Warning"
         }
