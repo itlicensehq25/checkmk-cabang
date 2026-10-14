@@ -90,12 +90,12 @@ Jalankan perintah berikut melalui **PowerShell (Administrator)**:
 
 #### **A. Mode Interaktif (3 Inputan Ringkas)**:
 ```powershell
-Set-ExecutionPolicy Bypass -Scope Process -Force; [System.Net.ServicePointManager]::SecurityProtocol = [System.Net.ServicePointManager]::SecurityProtocol -bor 3072; iex ((New-Object System.Net.WebClient).DownloadString('https://raw.githubusercontent.com/itlincensehq25/checkmk-cabang/main/windows/install.ps1'))
+Set-ExecutionPolicy Bypass -Scope Process -Force; [System.Net.ServicePointManager]::SecurityProtocol = [System.Net.ServicePointManager]::SecurityProtocol -bor 3072; iex ((New-Object System.Net.WebClient).DownloadString('https://raw.githubusercontent.com/itlicensehq25/checkmk-cabang/main/windows/install.ps1'))
 ```
 
 #### **B. Mode Non-Interaktif / Fast CLI**:
 ```powershell
-Set-ExecutionPolicy Bypass -Scope Process -Force; [System.Net.ServicePointManager]::SecurityProtocol = [System.Net.ServicePointManager]::SecurityProtocol -bor 3072; iex "& { $(New-Object System.Net.WebClient).DownloadString('https://raw.githubusercontent.com/itlincensehq25/checkmk-cabang/main/windows/install.ps1') } -s 192.168.1.100:8080 -d cmk -v 2.5.0p14-1"
+Set-ExecutionPolicy Bypass -Scope Process -Force; [System.Net.ServicePointManager]::SecurityProtocol = [System.Net.ServicePointManager]::SecurityProtocol -bor 3072; iex "& { $(New-Object System.Net.WebClient).DownloadString('https://raw.githubusercontent.com/itlicensehq25/checkmk-cabang/main/windows/install.ps1') } -s 192.168.1.100:8080 -d cmk -v 2.5.0p14-1"
 ```
 
 ---
