@@ -1,0 +1,20 @@
+version: '3.8'
+
+services:
+  checkmk:
+    image: checkmk/check-mk-raw:2.3.0-latest
+    container_name: checkmk-server
+    restart: unless-stopped
+    ports:
+      - "8080:5000"   # Port Web GUI Checkmk (Akses via http://<IP_Server>:8080/<site_id>)
+      - "8000:8000"   # Port Registrasi TLS Agen (Checkmk Agent Controller)
+    environment:
+      - CMK_PASSWORD=YourSecurePassword123!  # Ganti dengan password admin yang kuat
+      - CMK_SITE_ID=cmk               # Nama site/instansi monitoring Anda
+    volumes:
+      - /etc/localtime:/etc/localtime:ro     # Sinkronisasi zona waktu dengan host
+      - checkmk-data:/opt/omd/sites          # Volume persistent untuk data monitoring Anda
+
+volumes:
+  checkmk-data:
+    driver: local
