@@ -6,11 +6,11 @@
 ![Android](https://img.shields.io/badge/Android%20PDA-cmkagent%20v1.3.7-3DDC84?style=for-the-badge&logo=android&logoColor=black)
 ![Docker](https://img.shields.io/badge/Docker-Compose%20Ready-2496ED?style=for-the-badge&logo=docker&logoColor=white)
 
-Ekosistem pemantauan infrastruktur (*monitoring agent suite*) standar operasional terpusat **IT OPS NASIONAL** untuk **Checkmk** yang menyatukan pengawasan perangkat **Linux Host (Desktop Kasir / Server Cabang)**, **Windows Client/Server (PC Kasir, Backoffice, Laptop Operasional)**, dan **Android Industrial PDA (Newland NLS-MT93 & Generic Android)** ke dalam satu standar metrik, format output, dan ambang batas (*threshold*) yang seragam di seluruh kantor cabang dan regional.
+Ekosistem pemantauan infrastruktur (*monitoring agent suite*) standar operasional terpusat **IT OPS NASIONAL** untuk **Checkmk** yang menyatukan pengawasan perangkat **Linux Host / Server Cabang)**, **Windows Client**, dan **Android Industrial PDA (Newland NLS-MT93 & Generic Android)** ke dalam satu standar metrik, format output, dan ambang batas (*threshold*) yang seragam di seluruh kantor cabang dan regional.
 
 Seluruh kode sumber, skrip _local checks_, aplikasi native Android (`cmkagent`), _auto-updater_, serta pipeline CI/CD dikelola secara terpusat di repositori resmi:  
 🌐 **`itlicensehq25/checkmk-cabang`** (https://github.com/itlicensehq25/checkmk-cabang)  
-*(Kredit & apresiasi untuk Mas Aziz dan Mas Dodik atas fondasi dan pengembangan sistem)*
+*(Kredit & apresiasi untuk IT HQEJBNT - BE BRAVE and SPIRIT TEAM SPECS)*
 
 ---
 
@@ -497,3 +497,13 @@ Seluruh skrip menggunakan pemisah pipa standar ASCII (`|`) pada bagian ringkasan
 ---
 
 **Dikelola oleh Tim IT OPS NASIONAL (`itlicensehq25/checkmk-cabang`)**
+Kredit untuk rekan rekan yang berkerja sama atas jalannya project ini :
+1. Mas Rizqy selaku IT OM yang selalu memberikan arahan dan masukan.
+2. Mas Rachmad yang selalu mengkoordinar rekan rekan dengan penuh semangat.
+3. Mas Aziz yang selalu ada ide dan gagasan baru.
+4. Mas Sangus (CV MATAHARI MANIS) sebagai Vendor kebanggaan kita.
+5. Bli Kadek yang selalu fokus dan tenang serta sering berikan masukan.
+6. Gus Natsir yang selalu memberikan improvement terkait project ini.
+7. Bang Gilang yang tidak pernah lupa mencatat semua yang telah dikerjakan.
+8. Cak Dod (Angka Ikut) dalam pengembangan project.
+ 

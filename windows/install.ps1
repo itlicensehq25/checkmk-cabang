@@ -398,6 +398,14 @@ try {
     Write-Warning "Gagal mendaftarkan Scheduled Task Auto-Update: $_"
 }
 
+# 8.3 Unduh Tooling Hardware Sensor (setup_hwinfo.ps1 & setup_crystaldiskinfo.ps1)
+$HwinfoSetupPath = "$AgentDir\setup_hwinfo.ps1"
+$HwinfoSetupUrl  = "$BaseUrl/setup_hwinfo.ps1"
+try {
+    & curl.exe -s -k -L "$HwinfoSetupUrl" -o "$HwinfoSetupPath"
+    if (Test-Path $HwinfoSetupPath) { Unblock-File -Path $HwinfoSetupPath -ErrorAction SilentlyContinue }
+} catch {}
+
 # 9. Konfigurasi Firewall & Service Checkmk (Dibatasi ke IP Server Checkmk Cabang)
 try {
     $allowedRemoteIps = @()
