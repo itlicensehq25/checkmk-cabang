@@ -259,68 +259,160 @@ prune_ping_logs_30days() {
 }
 
 # ------------------------------------------------------------------------------
-# 6. FORMAT BARIS OUTPUT CHECKMK & UPDATE AKUMULATOR 1 JAM
+# 6. FORMAT BARIS OUTPUT CHECKMK (RERATA PING & KONDISI JARINGAN 24 JAM)
 # ------------------------------------------------------------------------------
-build_checkmk_ping_line() {
+build_checkmk_ping_line_24h() {
     local svc_name="$1"
-    local tgt_display="$2"
-    local samples="$3"
-    local tx="$4"
-    local rx="$5"
-    local fail_min="$6"
-    local avg_ms="$7"
-    local min_ms="$8"
-    local max_ms="$9"
-    local last_ms="${10}"
-    local start_sec="${11}"
-    local end_sec="${12}"
-    local warn_rtt="${13}"
-    local crit_rtt="${14}"
-    local completed_hour="${15}"
+    local tgt_ip="$2"
+    local is_gw="$3"
+    local warn_rtt="$4"
+    local crit_rtt="$5"
+    local now_sec="$6"
 
-    local start_hm end_hm
-    start_hm=$(date -d "@$start_sec" "+%H:%M" 2>/dev/null || echo "00:00")
-    end_hm=$(date -d "@$end_sec" "+%H:%M" 2>/dev/null || echo "00:00")
+    local cutoff_ts
+    cutoff_ts=$(date -d "24 hours ago" "+%Y-%m-%d %H:%M:%S" 2>/dev/null)
+    if [ -z "$cutoff_ts" ]; then
+        local cut_s=$(( now_sec - 86400 ))
+        cutoff_ts=$(date -d "@$cut_s" "+%Y-%m-%d %H:%M:%S" 2>/dev/null)
+    fi
 
-    awk -v svc="$svc_name" \
-        -v tgt="$tgt_display" \
-        -v samples="$samples" \
-        -v tx="$tx" \
-        -v rx="$rx" \
-        -v fail_min="$fail_min" \
-        -v avg_ms="$avg_ms" \
-        -v min_ms="$min_ms" \
-        -v max_ms="$max_ms" \
-        -v last_ms="$last_ms" \
-        -v win_str="${start_hm}-${end_hm}" \
+    tail -n 5000 "$PING_LOG_FILE" 2>/dev/null | awk \
+        -v svc="$svc_name" \
+        -v tgt_match="$tgt_ip" \
+        -v is_gw="$is_gw" \
+        -v cutoff="$cutoff_ts" \
         -v warn_rtt="$warn_rtt" \
-        -v crit_rtt="$crit_rtt" \
-        -v done_hr="$completed_hour" '
+        -v crit_rtt="$crit_rtt" '
     BEGIN {
-        loss_pct = (tx > 0) ? (((tx - rx) * 100.0) / tx) : 0.0;
+        total_tx = 0; total_rx = 0;
+        rtt_sum = 0.0; rtt_cnt = 0;
+        rtt_min = -1.0; rtt_max = -1.0;
+        last_tx = 0; last_rx = -1; last_avg = -1.0;
+        in_outage = 0; outage_cnt = 0; outage_idx = 0;
+        out_start = ""; out_last = "";
+        prev_day = -1; prev_min = -1;
+        tgt_len = length(tgt_match);
+    }
+    {
+        if (substr($0, 1, 1) != "[" || substr($0, 21, 7) != "] PING ") next;
+        ts = substr($0, 2, 19);
+        if (cutoff != "" && ts < cutoff) next;
+
+        rest = substr($0, 28);
+        if (substr(rest, 1, tgt_len) != tgt_match) next;
+        next_ch = substr(rest, tgt_len + 1, 1);
+        if (next_ch != " " && next_ch != "|") next;
+
+        hm  = substr(ts, 12, 5);
+        day = substr(ts, 9, 2) + 0;
+        hr  = substr(ts, 12, 2) + 0;
+        mn  = substr(ts, 15, 2) + 0;
+        cur_min = hr * 60 + mn;
+
+        if (prev_day >= 0) {
+            diff_min = (day != prev_day) ? ((1440 - prev_min) + cur_min) : (cur_min - prev_min);
+            if (diff_min > 5 && in_outage == 1) {
+                if (out_start == out_last) {
+                    end_m = (prev_min + 1) % 1440;
+                    out_end_hm = sprintf("%02d:%02d", int(end_m / 60), end_m % 60);
+                    outage_list[++outage_idx] = out_start "-" out_end_hm;
+                } else {
+                    outage_list[++outage_idx] = out_start "-" out_last;
+                }
+                in_outage = 0;
+            }
+        }
+        prev_day = day;
+        prev_min = cur_min;
+
+        tx = 4; rx = 0; min_v = -1.0; avg_v = -1.0; max_v = -1.0;
+        if (match(rest, /tx=[0-9]+/))   tx = substr(rest, RSTART + 3, RLENGTH - 3) + 0;
+        if (match(rest, /rx=[0-9]+/))   rx = substr(rest, RSTART + 3, RLENGTH - 3) + 0;
+        if (match(rest, /min=[0-9.]+/)) min_v = substr(rest, RSTART + 4, RLENGTH - 4) + 0.0;
+        if (match(rest, /avg=[0-9.]+/)) avg_v = substr(rest, RSTART + 4, RLENGTH - 4) + 0.0;
+        if (match(rest, /max=[0-9.]+/)) max_v = substr(rest, RSTART + 4, RLENGTH - 4) + 0.0;
+
+        total_tx += tx;
+        total_rx += rx;
+        if (avg_v >= 0) {
+            rtt_sum += avg_v;
+            rtt_cnt++;
+        }
+        if (min_v >= 0 && (rtt_min < 0 || min_v < rtt_min)) rtt_min = min_v;
+        if (max_v >= 0 && (rtt_max < 0 || max_v > rtt_max)) rtt_max = max_v;
+
+        last_tx  = tx;
+        last_rx  = rx;
+        last_avg = avg_v;
+
+        is_down = (rx == 0 || avg_v < 0) ? 1 : 0;
+        if (is_down) {
+            if (!in_outage) {
+                in_outage = 1;
+                outage_cnt++;
+                out_start = hm;
+                out_last  = hm;
+            } else {
+                out_last = hm;
+            }
+        } else {
+            if (in_outage) {
+                outage_list[++outage_idx] = out_start "-" hm;
+                in_outage = 0;
+            }
+        }
+    }
+    END {
+        if (in_outage) {
+            outage_list[++outage_idx] = out_start "-sekarang";
+        }
+
+        avg_ms    = (rtt_cnt > 0) ? (rtt_sum / rtt_cnt) : -1.0;
+        loss_pct  = (total_tx > 0) ? (((total_tx - total_rx) * 100.0) / total_tx) : 0.0;
+        last_loss = (last_tx > 0) ? (((last_tx - last_rx) * 100.0) / last_tx) : 0.0;
+
         state = 0;
-        if (tx > 0 && (loss_pct >= 50.0 || (avg_ms >= 0 && avg_ms >= crit_rtt))) {
+        if (total_tx > 0 && (last_rx == 0 || loss_pct >= 50.0 || (avg_ms >= 0 && avg_ms >= crit_rtt))) {
             state = 2;
-        } else if (tx > 0 && (loss_pct >= 20.0 || (avg_ms >= 0 && avg_ms >= warn_rtt))) {
+        } else if (total_tx > 0 && (loss_pct >= 20.0 || (avg_ms >= 0 && avg_ms >= warn_rtt))) {
             state = 1;
         }
-        state_str = (state == 2) ? "CRITICAL" : ((state == 1) ? "WARNING" : "OK");
 
-        rta_m = (avg_ms >= 0) ? sprintf("rta=%.2fms;%.0f;%.0f;0", avg_ms, warn_rtt, crit_rtt) : sprintf("rta=0.00ms;%.0f;%.0f;0", warn_rtt, crit_rtt);
-        pl_m  = sprintf("pl=%.1f%%;20;50;0;100", loss_pct);
-        min_m = (min_ms >= 0) ? sprintf("|rtmin=%.2fms", min_ms) : "";
-        max_m = (max_ms >= 0) ? sprintf("|rtmax=%.2fms", max_ms) : "";
+        # Konversi ms ke detik (s) untuk metrik bawaan Checkmk (rta, rtmin, rtmax)
+        # agar Perf-O-Meter dan grafik Checkmk otomatis merender satuan ms dengan benar
+        rta_s  = (avg_ms >= 0) ? (avg_ms / 1000.0) : 0.0;
+        warn_s = warn_rtt / 1000.0;
+        crit_s = crit_rtt / 1000.0;
+        rta_m  = sprintf("rta=%.4f;%.3f;%.3f;0", rta_s, warn_s, crit_s);
+        pl_m   = sprintf("pl=%.1f%%;20;50;0;100", loss_pct);
+        min_m  = (rtt_min >= 0) ? sprintf("|rtmin=%.4f", rtt_min / 1000.0) : "";
+        max_m  = (rtt_max >= 0) ? sprintf("|rtmax=%.4f", rtt_max / 1000.0) : "";
         metrics = rta_m "|" pl_m min_m max_m;
 
-        avg_s = (avg_ms >= 0) ? sprintf("%.1f ms", avg_ms) : "TIMEOUT";
-        mm_s  = (min_ms >= 0 && max_ms >= 0) ? sprintf("%.1f/%.1f ms", min_ms, max_ms) : "N/A";
-        lst_s = (last_ms >= 0) ? sprintf("%.1f ms", last_ms) : "TIMEOUT";
+        if (last_rx == 0) {
+            rerata_str = (avg_ms >= 0) ? sprintf("TIMEOUT (Rerata 24 Jam: %.1f ms)", avg_ms) : "TIMEOUT";
+        } else if (avg_ms >= 0) {
+            rerata_str = sprintf("%.1f ms", avg_ms);
+        } else {
+            rerata_str = "N/A";
+        }
+        if (is_gw == 1) {
+            rerata_str = rerata_str " (" tgt_match ")";
+        }
 
-        mode_lbl = (done_hr == 1) ? sprintf("1h Summary (%dx4=%d pkt)", samples, tx) : sprintf("Buffering 1h (%d/60m, %d pkt)", samples, tx);
-        max_smp = (samples > 0) ? samples : 1;
+        if (outage_cnt == 0) {
+            kondisi_str = "Normal / Tidak Ada Putus (0x)";
+        } else {
+            start_i = (outage_idx > 8) ? (outage_idx - 7) : 1;
+            joined = (start_i > 1) ? "..., " : "";
+            for (i = start_i; i <= outage_idx; i++) {
+                joined = joined ((i > start_i) ? ", " : "") outage_list[i];
+            }
+            kondisi_str = sprintf("Putus %dx (%s)", outage_cnt, joined);
+        }
 
-        printf "%d \"%s\" %s Status : %s | Target : %s | Mode : %s | Loss : %.1f%% (%d/%d rx) | Avg RTT : %s | Min/Max : %s | Last : %s | Timeout Min : %d/%d | Window : %s | Log : 30d Rolling\n",
-            state, svc, metrics, state_str, tgt, mode_lbl, loss_pct, rx, tx, avg_s, mm_s, lst_s, fail_min, max_smp, win_str;
+        printf "%d \"%s\" %s Rerata Ping: %s | Kondisi 24 Jam: %s\n",
+            state, svc, metrics, rerata_str, kondisi_str;
     }'
 }
 
@@ -336,6 +428,7 @@ update_target_accumulator() {
 
     local state_file="${PING_STATE_DIR}/${key}.state"
     local pub_file="${PING_STATE_DIR}/${key}.pub"
+    rm -f "$pub_file" 2>/dev/null
 
     local win_start_sec=0 win_samples=0 win_tx=0 win_rx=0 win_fail_min=0
     local win_rtt_count=0 win_rtt_sum="0.0" win_rtt_min="-1.0" win_rtt_max="-1.0"
@@ -384,10 +477,6 @@ update_target_accumulator() {
     if [ "$elapsed" -ge "$REPORT_INTERVAL_SEC" ] || [ "$win_samples" -ge "$SAMPLES_PER_HOUR" ]; then
         local avg_ms
         avg_ms=$(awk -v cnt="$win_rtt_count" -v sum="$win_rtt_sum" 'BEGIN { if (cnt > 0) printf "%.2f", sum / cnt; else print "-1.0"; }')
-        local hourly_line
-        hourly_line=$(build_checkmk_ping_line "$svc_name" "$tgt_display" "$win_samples" "$win_tx" "$win_rx" "$win_fail_min" "$avg_ms" "$win_rtt_min" "$win_rtt_max" "$last_avg_ms" "$win_start_sec" "$now_sec" "$warn_rtt" "$crit_rtt" 1)
-
-        echo "${now_sec}|${hourly_line}" > "${pub_file}.tmp.$$" && mv -f "${pub_file}.tmp.$$" "$pub_file"
 
         # Catat baris rangkuman 1 jam ke dalam ping_history.log
         local start_hm end_hm
@@ -423,35 +512,14 @@ update_target_accumulator() {
 get_target_checkmk_output() {
     local key="$1"
     local svc_name="$2"
-    local tgt_display="$3"
-    local warn_rtt="$4"
-    local crit_rtt="$5"
-    local now_sec="$6"
+    local tgt_ip="$3"
+    local is_gw="$4"
+    local warn_rtt="$5"
+    local crit_rtt="$6"
+    local now_sec="$7"
 
-    local pub_file="${PING_STATE_DIR}/${key}.pub"
-    local state_file="${PING_STATE_DIR}/${key}.state"
-
-    if [ -f "$pub_file" ]; then
-        local pub_line
-        pub_line=$(cut -d'|' -f2- "$pub_file" 2>/dev/null)
-        if [ -n "$pub_line" ]; then
-            echo "$pub_line"
-            return 0
-        fi
-    fi
-
-    local win_start_sec="$now_sec" win_samples=0 win_tx=0 win_rx=0 win_fail_min=0
-    local win_rtt_count=0 win_rtt_sum="0.0" win_rtt_min="-1.0" win_rtt_max="-1.0"
-    local last_sample_sec="$now_sec" last_avg_ms="-1.0" last_loss="0.0"
-
-    if [ -f "$state_file" ]; then
-        IFS='|' read -r win_start_sec win_samples win_tx win_rx win_fail_min win_rtt_count win_rtt_sum win_rtt_min win_rtt_max last_sample_sec last_avg_ms last_loss < "$state_file"
-    fi
-
-    local avg_ms
-    avg_ms=$(awk -v cnt="$win_rtt_count" -v sum="$win_rtt_sum" 'BEGIN { if (cnt > 0) printf "%.2f", sum / cnt; else print "-1.0"; }')
-
-    build_checkmk_ping_line "$svc_name" "$tgt_display" "$win_samples" "$win_tx" "$win_rx" "$win_fail_min" "$avg_ms" "$win_rtt_min" "$win_rtt_max" "$last_avg_ms" "$win_start_sec" "$last_sample_sec" "$warn_rtt" "$crit_rtt" 0
+    rm -f "${PING_STATE_DIR}/${key}.pub" 2>/dev/null
+    build_checkmk_ping_line_24h "$svc_name" "$tgt_ip" "$is_gw" "$warn_rtt" "$crit_rtt" "$now_sec"
 }
 
 collect_minute_ping_samples() {
@@ -605,11 +673,11 @@ fi
 NOW_EPOCH_OUT=$(date +%s)
 GW_IP_OUT=$(get_branch_gateway_ip)
 
-get_target_checkmk_output "local" "$SERVICE_LOCAL" "$TARGET_LOCAL" 100 250 "$NOW_EPOCH_OUT"
-get_target_checkmk_output "internet" "$SERVICE_INTERNET" "$TARGET_INTERNET" 150 300 "$NOW_EPOCH_OUT"
+get_target_checkmk_output "local" "$SERVICE_LOCAL" "$TARGET_LOCAL" 0 100 250 "$NOW_EPOCH_OUT"
+get_target_checkmk_output "internet" "$SERVICE_INTERNET" "$TARGET_INTERNET" 0 150 300 "$NOW_EPOCH_OUT"
 
 if is_valid_ipv4 "$GW_IP_OUT"; then
-    get_target_checkmk_output "gateway" "$SERVICE_GATEWAY" "${GW_IP_OUT} (Gateway Cabang)" 50 150 "$NOW_EPOCH_OUT"
+    get_target_checkmk_output "gateway" "$SERVICE_GATEWAY" "$GW_IP_OUT" 1 50 150 "$NOW_EPOCH_OUT"
 else
-    echo "1 \"${SERVICE_GATEWAY}\" - Status : WARNING | Target : Belum Terdeteksi | Remark : Isi IP Gateway Cabang di ${GATEWAY_CONF}"
+    echo "1 \"${SERVICE_GATEWAY}\" - Rerata Ping: Belum Terdeteksi | Kondisi 24 Jam: Isi IP Gateway Cabang di ${GATEWAY_CONF}"
 fi

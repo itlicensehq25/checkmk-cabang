@@ -175,50 +175,24 @@ public final class PingMonitor {
      */
     public static String getCheckmkSection(Context context) {
         ensureInitialized(context);
-        SharedPreferences p = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE);
-        long nowSec = System.currentTimeMillis() / 1000L;
+        long nowMs = System.currentTimeMillis();
+        long nowSec = nowMs / 1000L;
 
-        long pubLocalSec = p.getLong(key(TARGET_LOCAL, "pub_sec"), 0L);
-        long pubNetSec = p.getLong(key(TARGET_INTERNET, "pub_sec"), 0L);
-        long pubGwSec = p.getLong(key(TARGET_GATEWAY_KEY, "pub_sec"), 0L);
-
-        String lineLocal = p.getString(key(TARGET_LOCAL, "pub_line"), null);
-        String lineNet = p.getString(key(TARGET_INTERNET, "pub_line"), null);
-        String lineGw = p.getString(key(TARGET_GATEWAY_KEY, "pub_line"), null);
-
-        if (lineLocal == null || lineLocal.isEmpty()) {
-            lineLocal = buildCurrentBufferLine(p, TARGET_LOCAL, TARGET_LOCAL, SERVICE_LOCAL, 100.0, 250.0);
-            pubLocalSec = p.getLong(key(TARGET_LOCAL, "win_start_ms"), System.currentTimeMillis()) / 1000L;
-        }
-        if (lineNet == null || lineNet.isEmpty()) {
-            lineNet = buildCurrentBufferLine(p, TARGET_INTERNET, TARGET_INTERNET, SERVICE_INTERNET, 150.0, 300.0);
-            pubNetSec = p.getLong(key(TARGET_INTERNET, "win_start_ms"), System.currentTimeMillis()) / 1000L;
-        }
+        String lineLocal = formatCheckmkPingLine24h(context, SERVICE_LOCAL, TARGET_LOCAL, false, 100.0, 250.0, nowMs);
+        String lineNet = formatCheckmkPingLine24h(context, SERVICE_INTERNET, TARGET_INTERNET, false, 150.0, 300.0, nowMs);
 
         String gatewayIp = AgentConfig.getGatewayIp(context);
+        String lineGw;
         if (!AgentConfig.isValidIpv4(gatewayIp)) {
-            pubGwSec = nowSec;
-            lineGw = "1 \"" + SERVICE_GATEWAY + "\" - Status : WARNING | Target : Belum Diisi | Remark : Wajib isi IP Gateway Cabang di Settings PDA";
-        } else if (lineGw == null || lineGw.isEmpty()) {
-            lineGw = buildCurrentBufferLine(p, TARGET_GATEWAY_KEY, gatewayIp + " (Gateway Cabang)", SERVICE_GATEWAY, 50.0, 150.0);
-            pubGwSec = p.getLong(key(TARGET_GATEWAY_KEY, "win_start_ms"), System.currentTimeMillis()) / 1000L;
+            lineGw = "1 \"" + SERVICE_GATEWAY + "\" - Rerata Ping: Belum Diisi | Kondisi 24 Jam: Wajib isi IP Gateway Cabang di Settings PDA";
+        } else {
+            lineGw = formatCheckmkPingLine24h(context, SERVICE_GATEWAY, gatewayIp, true, 50.0, 150.0, nowMs);
         }
 
-        if (pubLocalSec <= 0L || pubLocalSec > nowSec) pubLocalSec = nowSec;
-        if (pubNetSec <= 0L || pubNetSec > nowSec) pubNetSec = nowSec;
-        if (pubGwSec <= 0L || pubGwSec > nowSec) pubGwSec = nowSec;
-
         StringBuilder sb = new StringBuilder();
-        sb.append("<<<local:cached(").append(pubLocalSec).append(",")
-          .append(REPORT_INTERVAL_SEC).append("):sep(0)>>>\n");
+        sb.append("<<<local:cached(").append(nowSec).append(",90):sep(0)>>>\n");
         sb.append(lineLocal).append('\n');
-
-        sb.append("<<<local:cached(").append(pubNetSec).append(",")
-          .append(REPORT_INTERVAL_SEC).append("):sep(0)>>>\n");
         sb.append(lineNet).append('\n');
-
-        sb.append("<<<local:cached(").append(pubGwSec).append(",")
-          .append(REPORT_INTERVAL_SEC).append("):sep(0)>>>\n");
         sb.append(lineGw);
 
         return sb.toString();
@@ -336,6 +310,12 @@ public final class PingMonitor {
         ed.putFloat(key(targetKey, "last_avg_ms"), Double.isNaN(sample.avgMs) ? -1f : (float) sample.avgMs);
         ed.putFloat(key(targetKey, "last_loss"), (float) sample.lossPercent);
 
+        boolean isGw = TARGET_GATEWAY_KEY.equals(targetKey);
+        String line24h = formatCheckmkPingLine24h(
+                context, serviceName, sample.target, isGw, warnRttMs, critRttMs, sample.timestampMs);
+        ed.putString(key(targetKey, "pub_line"), line24h);
+        ed.putLong(key(targetKey, "pub_sec"), sample.timestampMs / 1000L);
+
         long elapsedMs = sample.timestampMs - winStartMs;
         boolean hourCompleted = (elapsedMs >= REPORT_INTERVAL_MS) || (winSamples >= SAMPLES_PER_HOUR);
 
@@ -344,15 +324,6 @@ public final class PingMonitor {
             double avgMs = rttCount > 0 ? (rttSum / (double) rttCount) : Double.NaN;
             double minMs = rttMin >= 0f ? rttMin : Double.NaN;
             double maxMs = rttMax >= 0f ? rttMax : Double.NaN;
-
-            String hourlyLine = formatCheckmkPingLine(
-                    serviceName, targetDisplay, winSamples, winTx, winRx, lossPct,
-                    avgMs, minMs, maxMs, winFailMin, winStartMs, sample.timestampMs,
-                    sample.avgMs, warnRttMs, critRttMs, true);
-
-            long pubSec = sample.timestampMs / 1000L;
-            ed.putString(key(targetKey, "pub_line"), hourlyLine);
-            ed.putLong(key(targetKey, "pub_sec"), pubSec);
 
             appendHourlySummaryLog(context, targetDisplay, winSamples, winTx, winRx, lossPct, avgMs, minMs, maxMs, winStartMs, sample.timestampMs);
 
@@ -381,76 +352,189 @@ public final class PingMonitor {
         ed.apply();
     }
 
-    private static String buildCurrentBufferLine(
-            SharedPreferences p, String targetKey, String targetDisplay, String serviceName,
-            double warnRttMs, double critRttMs) {
-        int winSamples = p.getInt(key(targetKey, "win_samples"), 0);
-        int winTx = p.getInt(key(targetKey, "win_tx"), 0);
-        int winRx = p.getInt(key(targetKey, "win_rx"), 0);
-        int winFailMin = p.getInt(key(targetKey, "win_fail_min"), 0);
-        int rttCount = p.getInt(key(targetKey, "win_rtt_count"), 0);
-        float rttSum = p.getFloat(key(targetKey, "win_rtt_sum"), 0f);
-        float rttMin = p.getFloat(key(targetKey, "win_rtt_min"), -1f);
-        float rttMax = p.getFloat(key(targetKey, "win_rtt_max"), -1f);
-        long winStartMs = p.getLong(key(targetKey, "win_start_ms"), System.currentTimeMillis());
-        long lastSampleMs = p.getLong(key(targetKey, "last_sample_ms"), System.currentTimeMillis());
-        float lastAvg = p.getFloat(key(targetKey, "last_avg_ms"), -1f);
+    private static String formatCheckmkPingLine24h(
+            Context context, String serviceName, String targetIp, boolean isGateway,
+            double warnRttMs, double critRttMs, long nowMs) {
 
-        double lossPct = winTx > 0 ? ((winTx - winRx) * 100.0 / winTx) : 0.0;
-        double avgMs = rttCount > 0 ? (rttSum / (double) rttCount) : Double.NaN;
-        double minMs = rttMin >= 0f ? rttMin : Double.NaN;
-        double maxMs = rttMax >= 0f ? rttMax : Double.NaN;
-        double lastMs = lastAvg >= 0f ? lastAvg : Double.NaN;
+        String cutoffStr = formatDateTime(nowMs - (24L * 3600L * 1000L));
 
-        return formatCheckmkPingLine(
-                serviceName, targetDisplay, winSamples, winTx, winRx, lossPct,
-                avgMs, minMs, maxMs, winFailMin, winStartMs, lastSampleMs,
-                lastMs, warnRttMs, critRttMs, false);
-    }
+        int totalTx = 0;
+        int totalRx = 0;
+        double rttSum = 0.0;
+        int rttCnt = 0;
+        double rttMin = -1.0;
+        double rttMax = -1.0;
+        int lastTx = 0;
+        int lastRx = -1;
+        boolean inOutage = false;
+        int outageCnt = 0;
+        String outStart = "";
+        String outLast = "";
+        int prevDay = -1;
+        int prevMin = -1;
+        java.util.ArrayList<String> outageList = new java.util.ArrayList<>();
 
-    private static String formatCheckmkPingLine(
-            String serviceName, String targetDisplay, int samples, int tx, int rx, double lossPct,
-            double avgMs, double minMs, double maxMs, int failMinutes,
-            long startMs, long endMs, double lastMs,
-            double warnRttMs, double critRttMs, boolean completedHour) {
+        File logFile = getPrimaryLogFile(context);
+        if (!logFile.exists()) {
+            File internal = new File(context.getFilesDir(), LOG_FILE_NAME);
+            if (internal.exists()) logFile = internal;
+        }
+
+        if (logFile.exists()) {
+            try (java.io.RandomAccessFile raf = new java.io.RandomAccessFile(logFile, "r")) {
+                long len = raf.length();
+                long seekOffset = Math.max(0L, len - 665600L);
+                raf.seek(seekOffset);
+                if (seekOffset > 0L) {
+                    raf.readLine();
+                }
+
+                int tgtLen = targetIp.length();
+                String line;
+                while ((line = raf.readLine()) != null) {
+                    if (line.length() < 35) continue;
+                    if (line.charAt(0) != '[' || !line.startsWith("] PING ", 20)) continue;
+
+                    String ts = line.substring(1, 20);
+                    if (ts.compareTo(cutoffStr) < 0) continue;
+
+                    String rest = line.substring(27);
+                    if (rest.length() <= tgtLen || !rest.startsWith(targetIp)) continue;
+                    char nextCh = rest.charAt(tgtLen);
+                    if (nextCh != ' ' && nextCh != '|') continue;
+
+                    String hm = ts.substring(11, 16);
+                    int day = Integer.parseInt(ts.substring(8, 10));
+                    int hr = Integer.parseInt(ts.substring(11, 13));
+                    int mn = Integer.parseInt(ts.substring(14, 16));
+                    int curMin = (hr * 60) + mn;
+
+                    if (prevDay >= 0) {
+                        int diffMin = (day != prevDay) ? ((1440 - prevMin) + curMin) : (curMin - prevMin);
+                        if (diffMin > 5 && inOutage) {
+                            if (outStart.equals(outLast)) {
+                                int endM = (prevMin + 1) % 1440;
+                                String outEndHm = String.format(Locale.US, "%02d:%02d", endM / 60, endM % 60);
+                                outageList.add(outStart + "-" + outEndHm);
+                            } else {
+                                outageList.add(outStart + "-" + outLast);
+                            }
+                            inOutage = false;
+                        }
+                    }
+                    prevDay = day;
+                    prevMin = curMin;
+
+                    int tx = 4;
+                    int rx = 0;
+                    double minV = -1.0;
+                    double avgV = -1.0;
+                    double maxV = -1.0;
+
+                    int pipeIdx = rest.indexOf('|');
+                    if (pipeIdx >= 0) {
+                        String[] tokens = rest.substring(pipeIdx + 1).trim().split("\\s+");
+                        for (String tok : tokens) {
+                            if (tok.startsWith("tx=")) {
+                                try { tx = Integer.parseInt(tok.substring(3)); } catch (Exception ignored) {}
+                            } else if (tok.startsWith("rx=")) {
+                                try { rx = Integer.parseInt(tok.substring(3)); } catch (Exception ignored) {}
+                            } else if (tok.startsWith("min=") && tok.endsWith("ms")) {
+                                try { minV = Double.parseDouble(tok.substring(4, tok.length() - 2)); } catch (Exception ignored) {}
+                            } else if (tok.startsWith("avg=") && tok.endsWith("ms")) {
+                                try { avgV = Double.parseDouble(tok.substring(4, tok.length() - 2)); } catch (Exception ignored) {}
+                            } else if (tok.startsWith("max=") && tok.endsWith("ms")) {
+                                try { maxV = Double.parseDouble(tok.substring(4, tok.length() - 2)); } catch (Exception ignored) {}
+                            }
+                        }
+                    }
+
+                    totalTx += tx;
+                    totalRx += rx;
+                    if (avgV >= 0) {
+                        rttSum += avgV;
+                        rttCnt++;
+                    }
+                    if (minV >= 0 && (rttMin < 0 || minV < rttMin)) rttMin = minV;
+                    if (maxV >= 0 && (rttMax < 0 || maxV > rttMax)) rttMax = maxV;
+
+                    lastTx = tx;
+                    lastRx = rx;
+
+                    boolean isDown = (rx == 0 || avgV < 0);
+                    if (isDown) {
+                        if (!inOutage) {
+                            inOutage = true;
+                            outageCnt++;
+                            outStart = hm;
+                            outLast = hm;
+                        } else {
+                            outLast = hm;
+                        }
+                    } else {
+                        if (inOutage) {
+                            outageList.add(outStart + "-" + hm);
+                            inOutage = false;
+                        }
+                    }
+                }
+            } catch (Throwable ignored) {}
+        }
+
+        if (inOutage) {
+            outageList.add(outStart + "-sekarang");
+        }
+
+        double avgMs = rttCnt > 0 ? (rttSum / rttCnt) : -1.0;
+        double lossPct = totalTx > 0 ? (((totalTx - totalRx) * 100.0) / totalTx) : 0.0;
+        double lastLoss = lastTx > 0 ? (((lastTx - lastRx) * 100.0) / lastTx) : 0.0;
 
         int state = 0;
-        if (tx > 0 && (lossPct >= 50.0 || (!Double.isNaN(avgMs) && avgMs >= critRttMs))) {
+        if (totalTx > 0 && (lastRx == 0 || lossPct >= 50.0 || (avgMs >= 0 && avgMs >= critRttMs))) {
             state = 2;
-        } else if (tx > 0 && (lossPct >= 20.0 || (!Double.isNaN(avgMs) && avgMs >= warnRttMs))) {
+        } else if (totalTx > 0 && (lossPct >= 20.0 || (avgMs >= 0 && avgMs >= warnRttMs))) {
             state = 1;
         }
 
-        String rtaMetric = !Double.isNaN(avgMs)
-                ? String.format(Locale.US, "rta=%.2fms;%.0f;%.0f;0", avgMs, warnRttMs, critRttMs)
-                : "rta=0.00ms;" + Math.round(warnRttMs) + ";" + Math.round(critRttMs) + ";0";
+        double rtaSec = avgMs >= 0 ? (avgMs / 1000.0) : 0.0;
+        String rtaMetric = String.format(Locale.US, "rta=%.4f;%.3f;%.3f;0", rtaSec, warnRttMs / 1000.0, critRttMs / 1000.0);
         String plMetric = String.format(Locale.US, "pl=%.1f%%;20;50;0;100", lossPct);
-        String minMetric = !Double.isNaN(minMs) ? String.format(Locale.US, "|rtmin=%.2fms", minMs) : "";
-        String maxMetric = !Double.isNaN(maxMs) ? String.format(Locale.US, "|rtmax=%.2fms", maxMs) : "";
+        String minMetric = rttMin >= 0 ? String.format(Locale.US, "|rtmin=%.4f", rttMin / 1000.0) : "";
+        String maxMetric = rttMax >= 0 ? String.format(Locale.US, "|rtmax=%.4f", rttMax / 1000.0) : "";
         String metrics = rtaMetric + "|" + plMetric + minMetric + maxMetric;
 
-        String avgStr = !Double.isNaN(avgMs) ? String.format(Locale.US, "%.1f ms", avgMs) : "TIMEOUT";
-        String minMaxStr = (!Double.isNaN(minMs) && !Double.isNaN(maxMs))
-                ? String.format(Locale.US, "%.1f/%.1f ms", minMs, maxMs) : "N/A";
-        String lastStr = !Double.isNaN(lastMs) ? String.format(Locale.US, "%.1f ms", lastMs) : "TIMEOUT";
-        String windowStr = formatTimeShort(startMs) + "-" + formatTimeShort(endMs);
-        String modeLabel = completedHour
-                ? "1h Summary (" + samples + "x4=" + tx + " pkt)"
-                : "Buffering 1h on PDA (" + samples + "/60m, " + tx + " pkt)";
+        String rerataStr;
+        if (lastRx == 0) {
+            rerataStr = avgMs >= 0
+                    ? String.format(Locale.US, "TIMEOUT (Rerata 24 Jam: %.1f ms)", avgMs)
+                    : "TIMEOUT";
+        } else if (avgMs >= 0) {
+            rerataStr = String.format(Locale.US, "%.1f ms", avgMs);
+        } else {
+            rerataStr = "N/A";
+        }
+        if (isGateway) {
+            rerataStr = rerataStr + " (" + targetIp + ")";
+        }
 
-        String stateStr = state == 2 ? "CRITICAL" : state == 1 ? "WARNING" : "OK";
+        String kondisiStr;
+        if (outageCnt == 0) {
+            kondisiStr = "Normal / Tidak Ada Putus (0x)";
+        } else {
+            int n = outageList.size();
+            int startIdx = n > 8 ? (n - 8) : 0;
+            StringBuilder jb = new StringBuilder();
+            if (startIdx > 0) jb.append("..., ");
+            for (int i = startIdx; i < n; i++) {
+                if (i > startIdx) jb.append(", ");
+                jb.append(outageList.get(i));
+            }
+            kondisiStr = String.format(Locale.US, "Putus %dx (%s)", outageCnt, jb.toString());
+        }
 
         return state + " \"" + serviceName + "\" " + metrics
-                + " Status : " + stateStr
-                + " | Target : " + targetDisplay
-                + " | Mode : " + modeLabel
-                + " | Loss : " + String.format(Locale.US, "%.1f%% (%d/%d rx)", lossPct, rx, tx)
-                + " | Avg RTT : " + avgStr
-                + " | Min/Max : " + minMaxStr
-                + " | Last : " + lastStr
-                + " | Timeout Min : " + failMinutes + "/" + Math.max(1, samples)
-                + " | Window : " + windowStr
-                + " | Log : 30d Rolling on PDA";
+                + " Rerata Ping: " + rerataStr
+                + " | Kondisi 24 Jam: " + kondisiStr;
     }
 
     private static PingSample executePing(String target, int count, long timestampMs) {
