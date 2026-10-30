@@ -1,4 +1,4 @@
-# Checkmk Enterprise-Grade Monitoring Suite - Standar IT OPS Nasional (`checkmk-cabang`)
+# Checkmk Community-Grade Monitoring Suite - Standar IT OPS Nasional (`checkmk-cabang`)
 
 ![Checkmk](https://img.shields.io/badge/Checkmk-2.3.0%20%7C%202.5.0p14-13d38e?style=for-the-badge&logo=checkmk&logoColor=white)
 ![Linux](https://img.shields.io/badge/Linux-Debian%20%7C%20Ubuntu%20%7C%20RHEL-FCC624?style=for-the-badge&logo=linux&logoColor=black)
