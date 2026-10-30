@@ -5,8 +5,10 @@ import android.app.NotificationChannel;
 import android.app.NotificationManager;
 import android.app.PendingIntent;
 import android.app.Service;
+import android.content.BroadcastReceiver;
 import android.content.Context;
 import android.content.Intent;
+import android.content.IntentFilter;
 import android.net.wifi.WifiManager;
 import android.os.Build;
 import android.os.IBinder;
@@ -32,6 +34,8 @@ public class CheckmkAgentService extends Service {
     private ExecutorService listenerExecutor;
     private ExecutorService clientWorkerExecutor;
     private ScheduledExecutorService pushExecutor;
+    private ScheduledExecutorService monitorExecutor;
+    private BroadcastReceiver hardwareEventReceiver;
 
     private PowerManager.WakeLock wakeLock;
     private WifiManager.WifiLock wifiLock;
@@ -54,8 +58,69 @@ public class CheckmkAgentService extends Service {
         running = true;
         acquireLocks();
         AgentStats.recordStart(this);
+        registerHardwareReceiver();
         startPullListener();
+        startMinuteMonitorScheduler();
         startPushScheduler();
+    }
+
+    private void registerHardwareReceiver() {
+        if (hardwareEventReceiver != null) return;
+        hardwareEventReceiver = new BroadcastReceiver() {
+            @Override
+            public void onReceive(Context context, Intent intent) {
+                if (!running || intent == null) return;
+                String action = intent.getAction();
+                if (Intent.ACTION_BATTERY_CHANGED.equals(action)
+                        || Intent.ACTION_POWER_CONNECTED.equals(action)
+                        || Intent.ACTION_POWER_DISCONNECTED.equals(action)) {
+                    try {
+                        DeviceMetrics.readBattery(getApplicationContext());
+                    } catch (Throwable ignored) {}
+                } else if (WifiManager.NETWORK_STATE_CHANGED_ACTION.equals(action)
+                        || WifiManager.RSSI_CHANGED_ACTION.equals(action)) {
+                    try {
+                        DeviceMetrics.readWifi(getApplicationContext());
+                    } catch (Throwable ignored) {}
+                }
+            }
+        };
+        try {
+            IntentFilter filter = new IntentFilter();
+            filter.addAction(Intent.ACTION_BATTERY_CHANGED);
+            filter.addAction(Intent.ACTION_POWER_CONNECTED);
+            filter.addAction(Intent.ACTION_POWER_DISCONNECTED);
+            filter.addAction(WifiManager.NETWORK_STATE_CHANGED_ACTION);
+            filter.addAction(WifiManager.RSSI_CHANGED_ACTION);
+            registerReceiver(hardwareEventReceiver, filter);
+        } catch (Throwable ignored) {}
+    }
+
+    private void unregisterHardwareReceiver() {
+        if (hardwareEventReceiver != null) {
+            try {
+                unregisterReceiver(hardwareEventReceiver);
+            } catch (Throwable ignored) {}
+            hardwareEventReceiver = null;
+        }
+    }
+
+    /**
+     * Runs every 1 minute (60s):
+     * 1) Pings 192.168.122.10 (4x) and 8.8.8.8 (4x), saves to persistent phone log,
+     *    and publishes 1-hour summary to Checkmk every 60 minutes.
+     * 2) Samples Battery (for continuous cycle counting) and Wi-Fi (for AP roaming tracking).
+     */
+    private void startMinuteMonitorScheduler() {
+        monitorExecutor = Executors.newSingleThreadScheduledExecutor();
+        monitorExecutor.scheduleAtFixedRate(() -> {
+            if (!running) return;
+            try {
+                DeviceMetrics.readBattery(getApplicationContext());
+                DeviceMetrics.readWifi(getApplicationContext());
+                PingMonitor.collectMinuteSample(getApplicationContext());
+            } catch (Throwable ignored) {}
+        }, 3, 60, TimeUnit.SECONDS);
     }
 
     private void acquireLocks() {
@@ -159,19 +224,19 @@ public class CheckmkAgentService extends Service {
     public void onDestroy() {
         running = false;
         AgentStats.recordStop(this);
+        unregisterHardwareReceiver();
         closeServerSocket();
         if (listenerExecutor != null) listenerExecutor.shutdownNow();
         if (clientWorkerExecutor != null) clientWorkerExecutor.shutdownNow();
+        if (monitorExecutor != null) monitorExecutor.shutdownNow();
         if (pushExecutor != null) pushExecutor.shutdownNow();
         releaseLocks();
         super.onDestroy();
     }
 
     private String notificationSummary() {
-        String push = AgentConfig.isPushConfigured(this)
-                ? "Push " + AgentConfig.getPushIntervalSec(this) + "s"
-                : "Push not configured";
-        return "Hybrid • Pull TCP " + AgentConfig.getPort(this) + " primary • " + push;
+        String allow = AgentConfig.getAllowedServerDisplay(this);
+        return "TCP/" + AgentConfig.getPort(this) + " (" + allow + ") • Ping 4x/1m";
     }
 
     private void closeServerSocket() {
@@ -189,7 +254,7 @@ public class CheckmkAgentService extends Service {
                         "cmkagent hybrid service",
                         NotificationManager.IMPORTANCE_LOW
                 );
-                channel.setDescription("Checkmk Android hybrid agent: pull primary and push backup");
+                channel.setDescription("Checkmk Android hybrid agent: pull primary, ping monitor, and push backup");
                 nm.createNotificationChannel(channel);
             }
         }
@@ -207,7 +272,7 @@ public class CheckmkAgentService extends Service {
                 : new Notification.Builder(this);
 
         return builder
-                .setContentTitle("cmkagent hybrid")
+                .setContentTitle("cmkagent v" + CheckmkOutput.VERSION)
                 .setContentText(text)
                 .setSmallIcon(R.drawable.ic_stat_cmkagent)
                 .setContentIntent(pi)

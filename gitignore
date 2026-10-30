@@ -35,10 +35,23 @@ desktop.ini
 .history/
 *.code-workspace
 
-# JetBrains (IntelliJ, PyCharm, dll)
+# JetBrains (IntelliJ, PyCharm, Android Studio, dll)
 .idea/
 *.iws
+*.iml
 out/
+
+# --- Android & Gradle Build Artifacts ---
+android/.gradle/
+android/build/
+android/app/build/
+android/local.properties
+*.apk
+*.aab
+*.ap_
+*.dex
+*.keystore
+*.jks
 
 # --- Docker & Environment Variables ---
 # Berkas env yang mungkin berisi password cmkadmin atau kredensial lain
@@ -55,6 +68,7 @@ docker-compose-local.yml
 *.log
 log_custom/
 checkmk_custom/
+push-cache/
 tmp/
 temp/
 obj/

@@ -49,7 +49,9 @@ public class MainActivity extends Activity {
     private EditText hostnameInput;
     private EditText portInput;
     private EditText designCapacityInput;
+    private EditText initialCyclesInput;
     private EditText allowedServerInput;
+    private EditText gatewayIpInput;
     private CheckBox autoStartInput;
     private CheckBox pushEnabledInput;
     private EditText pushUrlInput;
@@ -61,6 +63,7 @@ public class MainActivity extends Activity {
     private Section batterySection;
     private Section systemSection;
     private Section networkSection;
+    private Section appsSection;
     private Section deviceSection;
     private Section settingsSection;
     private Section diagnosticsSection;
@@ -71,6 +74,7 @@ public class MainActivity extends Activity {
     private TextView batteryText;
     private TextView systemText;
     private TextView networkText;
+    private TextView appsText;
     private TextView deviceText;
     private TextView diagnosticsText;
     private ProgressBar batteryProgress;
@@ -110,7 +114,7 @@ public class MainActivity extends Activity {
         root.addView(space(12));
         root.addView(buildSectionControls(), matchWrapMargin(0, 0, 0, 12));
 
-        agentSection = section("AGENT", "Pull listener & connection status", false);
+        agentSection = section("AGENT", "Pull listener & firewall status", false);
         agentBadge = badge("STARTING", C_WARN);
         agentSection.content.addView(agentBadge, wrap());
         agentText = bodyText();
@@ -120,12 +124,12 @@ public class MainActivity extends Activity {
 
         transportSection = section("HYBRID TRANSPORT", "Pull primary + push warm backup", false);
         TextView transportHelp = bodyText();
-        transportHelp.setText("Pull TCP/6556 tetap menjadi jalur utama. Push hanya menjaga salinan data terbaru di receiver sebagai jalur cadangan.");
+        transportHelp.setText("Pull TCP/6556 tetap menjadi jalur utama (dibatasi ke IP Server Checkmk Cabang). Push menjaga salinan data terbaru di receiver sebagai jalur cadangan.");
         transportHelp.setTextColor(C_MUTED);
         transportSection.content.addView(transportHelp, wrap());
         root.addView(transportSection.card, matchWrapMargin(0, 0, 0, 12));
 
-        batterySection = section("BATTERY", "Level, health estimate & thermal status", false);
+        batterySection = section("BATTERY (1-LINE UNIFIED)", "Health (2946 mAh @ 100%), cycles, temp, volt & current", false);
         batteryHeadline = new TextView(this);
         batteryHeadline.setTextColor(C_TEXT);
         batteryHeadline.setTextSize(25);
@@ -150,9 +154,21 @@ public class MainActivity extends Activity {
         systemSection.content.addView(systemText, wrap());
         root.addView(systemSection.card, matchWrapMargin(0, 0, 0, 12));
 
-        networkSection = section("NETWORK", "Network status & permissions", false);
+        networkSection = section("NETWORK, AP ROAMING & PING (1H)", "Wi-Fi UniFi/AP roaming & 4x/1m ping (30d CCTV log)", false);
         networkText = bodyText();
         networkSection.content.addView(networkText, wrap());
+
+        LinearLayout logActions = new LinearLayout(this);
+        logActions.setOrientation(LinearLayout.HORIZONTAL);
+        Button pingLogBtn = actionButton("VIEW PING LOG", C_CARD_ALT, C_GREEN);
+        pingLogBtn.setOnClickListener(v -> showPingLogDialog());
+        Button roamLogBtn = actionButton("VIEW ROAMING LOG", C_CARD_ALT, C_GREEN);
+        roamLogBtn.setOnClickListener(v -> showRoamingLogDialog());
+        logActions.addView(pingLogBtn, weightButton());
+        LinearLayout.LayoutParams secondLog = weightButton();
+        secondLog.setMargins(dp(8), 0, 0, 0);
+        logActions.addView(roamLogBtn, secondLog);
+        networkSection.content.addView(logActions, matchWrapMargin(0, 12, 0, 0));
 
         LinearLayout netActions = new LinearLayout(this);
         netActions.setOrientation(LinearLayout.HORIZONTAL);
@@ -164,26 +180,60 @@ public class MainActivity extends Activity {
         LinearLayout.LayoutParams secondP = weightButton();
         secondP.setMargins(dp(8), 0, 0, 0);
         netActions.addView(batteryOptButton, secondP);
-        networkSection.content.addView(netActions, matchWrapMargin(0, 12, 0, 0));
+        networkSection.content.addView(netActions, matchWrapMargin(0, 8, 0, 0));
         root.addView(networkSection.card, matchWrapMargin(0, 0, 0, 12));
+
+        appsSection = section("APPLICATIONS INVENTORY", "Installed APK packages & Checkmk HW/SW", false);
+        appsText = bodyText();
+        appsSection.content.addView(appsText, wrap());
+        Button rescanApps = actionButton("SCAN PACKAGES NOW", C_CARD_ALT, C_TEXT);
+        rescanApps.setOnClickListener(v -> {
+            updateDashboard();
+            Toast.makeText(this, "Inventaris aplikasi diperbarui", Toast.LENGTH_SHORT).show();
+        });
+        appsSection.content.addView(rescanApps, matchWrapMargin(0, 10, 0, 0));
+        root.addView(appsSection.card, matchWrapMargin(0, 0, 0, 12));
 
         deviceSection = section("DEVICE", "Hardware & Android profile", false);
         deviceText = bodyText();
         deviceSection.content.addView(deviceText, wrap());
         root.addView(deviceSection.card, matchWrapMargin(0, 0, 0, 12));
 
-        settingsSection = section("SETTINGS", "Tap to configure agent", false);
+        settingsSection = section("SETTINGS", "Tap to configure agent & IP Server Checkmk Cabang", false);
         hostnameInput = input(settingsSection.content, "Hostname Checkmk", InputType.TYPE_CLASS_TEXT,
                 "Contoh: PDA-10-FAUZI");
         portInput = input(settingsSection.content, "TCP Port", InputType.TYPE_CLASS_NUMBER, "6556");
+
+        allowedServerInput = input(settingsSection.content,
+                "IP Server Checkmk Cabang",
+                InputType.TYPE_CLASS_TEXT,
+                "Masukkan IP atau IP:Port Cabang (misal :80, :8080, :8081)");
+
+        gatewayIpInput = input(settingsSection.content,
+                "IP Gateway Cabang (Ping Monitor Baris ke-3)",
+                InputType.TYPE_CLASS_TEXT,
+                "Contoh: 192.168.55.1 atau 192.168.122.1");
+
+        Button detectGatewayBtn = actionButton("AUTO-DETECT GATEWAY DARI WI-FI", C_CARD_ALT, C_MUTED);
+        detectGatewayBtn.setOnClickListener(v -> {
+            String detected = DeviceMetrics.getDetectedGatewayIp(this);
+            if (!detected.isEmpty()) {
+                gatewayIpInput.setText(detected);
+                Toast.makeText(this, "Gateway terdeteksi: " + detected, Toast.LENGTH_SHORT).show();
+            } else {
+                Toast.makeText(this, "Tidak dapat mendeteksi gateway (Pastikan Wi-Fi terhubung)", Toast.LENGTH_SHORT).show();
+            }
+        });
+        settingsSection.content.addView(detectGatewayBtn, matchWrapMargin(0, 0, 0, 8));
+
         designCapacityInput = input(settingsSection.content,
                 "Design Capacity (mAh, 0 = auto)",
                 InputType.TYPE_CLASS_NUMBER | InputType.TYPE_NUMBER_FLAG_DECIMAL,
-                "0 = Otomatis (MT93 BTY95L = 5000 mAh)");
-        allowedServerInput = input(settingsSection.content,
-                "Allowed Checkmk Server IP",
-                InputType.TYPE_CLASS_TEXT,
-                "Kosong = semua IP; contoh: 192.168.55.112");
+                "0 = Otomatis (MT93 Spec = 4800 mAh, 100% Full = 2946 mAh)");
+        initialCyclesInput = input(settingsSection.content,
+                "Initial Battery Cycles (0 = auto hitung dari pengisian)",
+                InputType.TYPE_CLASS_NUMBER,
+                "0");
 
         pushEnabledInput = new CheckBox(this);
         pushEnabledInput.setText("Aktifkan PUSH backup (Hybrid)");
@@ -195,7 +245,7 @@ public class MainActivity extends Activity {
         pushUrlInput = input(settingsSection.content,
                 "Push Receiver URL",
                 InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_URI,
-                "Contoh: http://192.168.55.112:18080/api/v1/agent");
+                "Contoh: http://<IP-Server-Cabang>:18080/api/v1/agent");
         pushTokenInput = input(settingsSection.content,
                 "Push Token",
                 InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_PASSWORD,
@@ -378,7 +428,9 @@ public class MainActivity extends Activity {
         double design = AgentConfig.getDesignCapacityMah(this);
         designCapacityInput.setText(design > 0
                 ? String.format(Locale.US, "%.0f", design) : "0");
+        initialCyclesInput.setText(String.valueOf(AgentConfig.getInitialCycleCount(this)));
         allowedServerInput.setText(AgentConfig.getAllowedServer(this));
+        gatewayIpInput.setText(AgentConfig.getGatewayIp(this));
         pushEnabledInput.setChecked(AgentConfig.isPushEnabled(this));
         pushUrlInput.setText(AgentConfig.getPushUrl(this));
         pushTokenInput.setText(AgentConfig.getPushToken(this));
@@ -392,7 +444,10 @@ public class MainActivity extends Activity {
             int port = Integer.parseInt(portInput.getText().toString().trim());
             String designRaw = designCapacityInput.getText().toString().trim();
             double design = designRaw.isEmpty() ? 0.0 : Double.parseDouble(designRaw);
+            String initCyclesRaw = initialCyclesInput.getText().toString().trim();
+            int initCycles = initCyclesRaw.isEmpty() ? 0 : Integer.parseInt(initCyclesRaw);
             String allowed = allowedServerInput.getText().toString().trim();
+            String gatewayIp = gatewayIpInput.getText().toString().trim();
             boolean pushEnabled = pushEnabledInput.isChecked();
             String pushUrl = pushUrlInput.getText().toString().trim();
             String pushToken = pushTokenInput.getText().toString().trim();
@@ -400,12 +455,19 @@ public class MainActivity extends Activity {
             int pushInterval = pushIntervalRaw.isEmpty() ? 300 : Integer.parseInt(pushIntervalRaw);
             if (port < 1 || port > 65535) throw new IllegalArgumentException("Port tidak valid");
             if (design < 0 || design > 50000) throw new IllegalArgumentException("Design capacity tidak valid");
+            if (initCycles < 0 || initCycles > 10000) throw new IllegalArgumentException("Initial cycles tidak valid");
+            if (!AgentConfig.isValidAllowedServerList(allowed)) {
+                throw new IllegalArgumentException("Masukkan IP Server Checkmk Cabang terlebih dahulu (bisa IP saja atau IP:Port seperti :80, :8080, :8081)");
+            }
+            if (!gatewayIp.isEmpty() && !AgentConfig.isValidIpv4(gatewayIp)) {
+                throw new IllegalArgumentException("Format IP Gateway Cabang tidak valid (contoh: 192.168.55.1)");
+            }
             if (pushInterval < 60 || pushInterval > 86400) throw new IllegalArgumentException("Push interval harus 60-86400 detik");
             if (pushEnabled && !pushUrl.isEmpty()
                     && !(pushUrl.startsWith("http://") || pushUrl.startsWith("https://"))) {
                 throw new IllegalArgumentException("Push URL harus dimulai http:// atau https://");
             }
-            AgentConfig.save(this, hostname, port, design, autoStartInput.isChecked(), allowed,
+            AgentConfig.save(this, hostname, port, design, initCycles, autoStartInput.isChecked(), allowed, gatewayIp,
                     pushEnabled, pushUrl, pushToken, pushInterval);
             return true;
         } catch (Exception e) {
@@ -430,12 +492,15 @@ public class MainActivity extends Activity {
         DeviceMetrics.UsageInfo storage = DeviceMetrics.readStorage();
         DeviceMetrics.WifiStatus wifi = DeviceMetrics.readWifi(this);
         DeviceMetrics.DeviceInfo device = DeviceMetrics.readDeviceInfo();
+        DeviceMetrics.AppInventoryInfo apps = DeviceMetrics.readAppInventory(this);
         AgentStats.Snapshot stats = AgentStats.read(this);
+        PingMonitor.TargetStatus pingLocal = PingMonitor.readStatus(this, PingMonitor.TARGET_LOCAL);
+        PingMonitor.TargetStatus pingNet = PingMonitor.readStatus(this, PingMonitor.TARGET_INTERNET);
+        PingMonitor.TargetStatus pingGw = PingMonitor.readStatus(this, PingMonitor.TARGET_GATEWAY_KEY);
 
         String localIp = DeviceMetrics.getLocalIpv4();
         String lastPull = stats.lastPullMs > 0 ? formatDate(stats.lastPullMs) : "Belum ada";
-        String allow = AgentConfig.getAllowedServer(this);
-        if (allow.isEmpty()) allow = "Any source";
+        String allowDisplay = AgentConfig.getAllowedServerDisplay(this);
 
         agentSection.summary.setText((stats.running ? "RUNNING" : "STOPPED")
                 + "  •  " + AgentConfig.getHostname(this) + "  •  " + localIp);
@@ -443,11 +508,11 @@ public class MainActivity extends Activity {
         styleBadge(agentBadge, stats.running ? C_GREEN : C_CRIT);
         agentText.setText(
                 "Hostname     : " + AgentConfig.getHostname(this) + "\n"
-                        + "Listen       : 0.0.0.0:" + AgentConfig.getPort(this) + "\n"
+                        + "Listen       : 0.0.0.0:" + AgentConfig.getPort(this) + " (Restricted)\n"
                         + "Device IP    : " + localIp + "\n"
                         + "Last pull    : " + lastPull + "\n"
                         + "Last client  : " + stats.lastClient + "\n"
-                        + "Allowed IP   : " + allow + "\n"
+                        + "Server Cabang: " + allowDisplay + "\n"
                         + "Mode         : HYBRID (PULL primary + PUSH backup)"
         );
 
@@ -482,39 +547,45 @@ public class MainActivity extends Activity {
 
         String health = Double.isNaN(b.healthPercent) ? "N/A"
                 : String.format(Locale.US, "%.1f%%", b.healthPercent);
-        String full = Double.isNaN(b.fullCapacityMah) ? "N/A"
+        String full = Double.isNaN(b.fullCapacityMah) ? "2946 mAh"
                 : Math.round(b.fullCapacityMah) + " mAh";
-        String design = Double.isNaN(b.designCapacityMah) ? "N/A"
+        String design = Double.isNaN(b.designCapacityMah) ? "4800 mAh"
                 : Math.round(b.designCapacityMah) + " mAh";
         String temp = Double.isNaN(b.temperatureC) ? "N/A"
                 : String.format(Locale.US, "%.1f C", b.temperatureC);
         String voltage = Double.isNaN(b.voltageV) ? "N/A"
                 : String.format(Locale.US, "%.2f V", b.voltageV);
-        String current = Double.isNaN(b.currentNowMa) ? "N/A"
+        String chargeNow = Double.isNaN(b.chargeCounterMah) ? "N/A"
                 : String.format(Locale.US, "%.0f mAh", b.chargeCounterMah);
+        double activeCur = !Double.isNaN(b.currentNowMa) ? b.currentNowMa : b.currentAverageMa;
+        String currentFlow = Double.isNaN(activeCur) ? "N/A"
+                : String.format(Locale.US, "%.0f mA", activeCur);
 
         batterySection.summary.setText((b.level >= 0 ? b.level + "%" : "N/A")
-                + "  •  " + b.status + "  •  Health " + health);
+                + " (" + b.status + ") • Health " + health
+                + " • Cycles " + b.cycleCount + " • " + temp + " • " + voltage);
         batteryText.setText(
-                "Estimated health : " + health + "\n"
-                        + "Design capacity : " + design + "\n"
-                        + "Design source   : " + b.designCapacitySource + "\n"
-                        + (b.fullCapacityEstimated ? "Estimated full   : " : "Full capacity    : ") + full + "\n"
-                        + "Capacity source : " + b.fullCapacitySource + "\n"
-                        + "Temperature     : " + temp + "\n"
-                        + "Voltage         : " + voltage + "\n"
-                        + "Current charge  : " + current
+                "Checkmk Row      : 1 Baris Terpadu (Health_Battery)\n"
+                        + "Level / Status   : " + (b.level >= 0 ? b.level + "%" : "N/A") + " (" + b.status + ")\n"
+                        + "Real Health      : " + health + "\n"
+                        + "Charging Cycles  : " + b.cycleCount + " (" + b.chargeSessions + "x sesi, "
+                        + Math.round(b.totalChargedMah) + " mAh terakumulasi)\n"
+                        + "Full Capacity    : " + full + " (Acuan 100% Charge = 2946 mAh)\n"
+                        + "Design Spec      : " + design + " (" + b.designCapacitySource + ")\n"
+                        + "Current Charge   : " + chargeNow + "\n"
+                        + "Temperature      : " + temp + "\n"
+                        + "Voltage          : " + voltage + "\n"
+                        + "Electric Current : " + currentFlow + "\n"
+                        + "Calculation      : " + b.fullCapacitySource
         );
 
         systemSection.summary.setText("RAM " + Math.round(ram.usedPercent) + "%  •  Storage "
                 + Math.round(storage.usedPercent) + "%");
         systemText.setText(
-                "RAM      : " + Math.round(ram.usedPercent) + "% used  •  "
-                        + DeviceMetrics.fmt2(ram.freeGb) + " GB free / "
-                        + DeviceMetrics.fmt2(ram.totalGb) + " GB\n"
-                        + "Storage  : " + Math.round(storage.usedPercent) + "% used  •  "
-                        + DeviceMetrics.fmt2(storage.freeGb) + " GB free / "
-                        + DeviceMetrics.fmt2(storage.totalGb) + " GB"
+                "RAM      : " + Math.round(ram.usedPercent) + "% used (Cache 30m)\n"
+                        + "Storage  : " + Math.round(storage.usedPercent) + "% used (Cache 1d)\n"
+                        + "Free RAM : " + DeviceMetrics.fmt2(ram.freeGb) + " GB / " + DeviceMetrics.fmt2(ram.totalGb) + " GB\n"
+                        + "Free ROM : " + DeviceMetrics.fmt2(storage.freeGb) + " GB / " + DeviceMetrics.fmt2(storage.totalGb) + " GB"
         );
 
         String rssi = wifi.rssi == Integer.MIN_VALUE ? "N/A" : wifi.rssi + " dBm";
@@ -525,21 +596,49 @@ public class MainActivity extends Activity {
         String locationService = isLocationEnabled() ? "ON" : "OFF";
         boolean ignoringBatteryOpt = isIgnoringBatteryOptimizations();
 
-        networkSection.summary.setText((wifi.connected ? "Wi-Fi Connected" : "Not Connected")
-                + "  •  " + rssi + "  •  " + wifi.ip);
+        String pingLocalSummary = String.format(Locale.US, "%d/60m (%d pkt) • Loss %.1f%% • Avg %s",
+                pingLocal.windowSamples, pingLocal.windowTx, pingLocal.windowLossPercent,
+                Double.isNaN(pingLocal.windowAvgMs) ? "N/A" : String.format(Locale.US, "%.1f ms", pingLocal.windowAvgMs));
+        String pingNetSummary = String.format(Locale.US, "%d/60m (%d pkt) • Loss %.1f%% • Avg %s",
+                pingNet.windowSamples, pingNet.windowTx, pingNet.windowLossPercent,
+                Double.isNaN(pingNet.windowAvgMs) ? "N/A" : String.format(Locale.US, "%.1f ms", pingNet.windowAvgMs));
+        String gwIp = AgentConfig.getGatewayIp(this);
+        String pingGwSummary = !AgentConfig.isValidIpv4(gwIp)
+                ? "Belum dikonfigurasi (Isi di Settings)"
+                : String.format(Locale.US, "%d/60m (%d pkt) • Loss %.1f%% • Avg %s",
+                        pingGw.windowSamples, pingGw.windowTx, pingGw.windowLossPercent,
+                        Double.isNaN(pingGw.windowAvgMs) ? "N/A" : String.format(Locale.US, "%.1f ms", pingGw.windowAvgMs));
+
+        networkSection.summary.setText((wifi.connected ? wifi.ssid : "Not Connected")
+                + " • " + rssi + " • Roam " + wifi.roamsLastHour + "x/1h");
         networkText.setText(
                 "Wi-Fi          : " + (wifi.connected ? "Connected" : "Not Connected") + "\n"
                         + "SSID           : " + wifi.ssid + "\n"
-                        + "Signal         : " + rssi + "\n"
-                        + "Link speed     : " + speed + "\n"
-                        + "Frequency      : " + freq + "\n"
-                        + "IP             : " + wifi.ip + "\n"
-                        + "Detection      : " + wifi.detectionSource + "\n"
-                        + "Details source : " + wifi.detailsSource + "\n"
+                        + "AP BSSID       : " + wifi.bssid + " (" + wifi.apVendor + ")\n"
+                        + "Band / Channel : " + wifi.bandChannel + " (" + freq + ")\n"
+                        + "AP Roaming     : " + wifi.roamSummary + "\n"
+                        + "Last Roam Move : " + wifi.lastRoamReason + "\n"
+                        + "Signal / Speed : " + rssi + "  •  " + speed + "\n"
+                        + "Local IP       : " + wifi.ip + "\n"
+                        + "Ping 192.168.122.10 : " + pingLocalSummary + "\n"
+                        + "Ping 8.8.8.8        : " + pingNetSummary + "\n"
+                        + "Ping Gateway (" + AgentConfig.getGatewayIpDisplay(this) + ") : " + pingGwSummary + "\n"
+                        + "Ping Schedule  : 4x tiap 1 menit -> kirim Checkmk tiap 1 jam\n"
+                        + "Ping Retention : 30 Hari (Auto-hapus hari ke-31+ seperti CCTV)\n"
+                        + "Ping Log Path  : " + pingLocal.logFilePath + "\n"
+                        + "Fine Location  : " + locationPermission + " (Loc Service: " + locationService + ")\n"
                         + "Nearby Wi-Fi   : " + nearbyPermission + "\n"
-                        + "Fine location  : " + locationPermission + "\n"
-                        + "Location svc   : " + locationService + "\n"
                         + "Battery Opt    : " + (ignoringBatteryOpt ? "Unrestricted (Safe)" : "Optimized (Risk of sleep)")
+        );
+
+        appsSection.summary.setText(apps.totalApps + " Apps  •  " + apps.userApps + " User  •  HW/SW Ready");
+        appsText.setText(
+                "Total Packages : " + apps.totalApps + "\n"
+                        + "User Installed : " + apps.userApps + "\n"
+                        + "System Apps    : " + apps.systemApps + "\n"
+                        + "Checkmk Format : lnx_packages / inv_packages\n"
+                        + "Payload Status : Ready for HW/SW Inventory pull\n"
+                        + "Schedule       : Weekly on Sundays (Instant on 1st pull)"
         );
 
         deviceSection.summary.setText(device.manufacturer + " " + device.model
@@ -548,20 +647,23 @@ public class MainActivity extends Activity {
                 "Manufacturer : " + device.manufacturer + "\n"
                         + "Model        : " + device.model + "\n"
                         + "Profile      : " + device.profile + "\n"
+                        + "Hardware     : " + device.hardwareSoc + " (" + device.board + ")\n"
+                        + "Architecture : " + device.arch + "\n"
+                        + "Kernel       : " + device.kernelVersion + "\n"
                         + "Android      : " + device.androidVersion + " (SDK " + device.sdk + ")\n"
                         + "Device uptime: " + CheckmkOutput.formatDuration(device.uptimeMs)
         );
 
-        settingsSection.summary.setText(AgentConfig.getHostname(this) + "  •  TCP "
-                + AgentConfig.getPort(this) + "  •  Push "
-                + (AgentConfig.isPushConfigured(this) ? "ON" : "OFF"));
+        settingsSection.summary.setText(AgentConfig.getHostname(this) + "  •  Server "
+                + allowDisplay + "  •  GW " + AgentConfig.getGatewayIpDisplay(this) + "  •  TCP " + AgentConfig.getPort(this));
 
-        diagnosticsSection.summary.setText("Pulls " + stats.accepted + "  •  Push OK "
-                + stats.pushSuccesses + "  •  Push fail " + stats.pushFailures);
+        diagnosticsSection.summary.setText("Pulls " + stats.accepted + "  •  Rejected "
+                + stats.rejected + "  •  Push OK " + stats.pushSuccesses);
         diagnosticsText.setText(
                 "Accepted pulls : " + stats.accepted + "\n"
                         + "Rejected pulls : " + stats.rejected + "\n"
                         + "Last rejected  : " + stats.lastRejected + "\n"
+                        + "Server Cabang  : " + allowDisplay + "\n"
                         + "Push attempts  : " + stats.pushAttempts + "\n"
                         + "Push successes : " + stats.pushSuccesses + "\n"
                         + "Push failures  : " + stats.pushFailures + "\n"
@@ -584,6 +686,62 @@ public class MainActivity extends Activity {
         return body;
     }
 
+    private void showPingLogDialog() {
+        showTextDialog("Log Ping Lokal 3-Baris (Retensi 30 Hari CCTV)",
+                PingMonitor.readRecentLogTail(this, 120),
+                "PING 4X NOW",
+                () -> {
+                    Toast.makeText(this, "Menjalankan ping 4x ke 192.168.122.10, 8.8.8.8, & Gateway Cabang...", Toast.LENGTH_SHORT).show();
+                    new Thread(() -> {
+                        PingMonitor.collectMinuteSample(getApplicationContext());
+                        runOnUiThread(() -> {
+                            updateDashboard();
+                            Toast.makeText(this, "Sampel ping 4x berhasil disimpan ke log HP", Toast.LENGTH_SHORT).show();
+                        });
+                    }, "cmkagent-manual-ping").start();
+                });
+    }
+
+    private void showRoamingLogDialog() {
+        showTextDialog("Log Roaming Wi-Fi AP (UniFi / Multi-AP)",
+                WifiRoamingTracker.readRecentRoamLog(this, 100),
+                null,
+                null);
+    }
+
+    private void showTextDialog(String title, String content, String neutralLabel, Runnable neutralAction) {
+        TextView text = new TextView(this);
+        text.setText(content);
+        text.setTextIsSelectable(true);
+        text.setTypeface(Typeface.MONOSPACE);
+        text.setTextColor(C_TEXT);
+        text.setTextSize(11);
+        text.setPadding(dp(16), dp(16), dp(16), dp(16));
+        text.setBackgroundColor(C_BG);
+
+        ScrollView scroller = new ScrollView(this);
+        scroller.setBackgroundColor(C_BG);
+        scroller.addView(text);
+
+        AlertDialog.Builder builder = new AlertDialog.Builder(this)
+                .setTitle(title)
+                .setView(scroller)
+                .setPositiveButton("CLOSE", null);
+        if (neutralLabel != null && neutralAction != null) {
+            builder.setNeutralButton(neutralLabel, (d, w) -> neutralAction.run());
+        }
+        AlertDialog dialog = builder.create();
+        dialog.setOnShowListener(d -> {
+            if (dialog.getButton(AlertDialog.BUTTON_POSITIVE) != null) {
+                dialog.getButton(AlertDialog.BUTTON_POSITIVE).setTextColor(C_GREEN);
+            }
+            if (dialog.getButton(AlertDialog.BUTTON_NEUTRAL) != null) {
+                dialog.getButton(AlertDialog.BUTTON_NEUTRAL).setTextColor(C_WARN);
+            }
+        });
+        dialog.show();
+    }
+
     private void testPushNow() {
         if (!saveConfigOnly()) return;
         if (!AgentConfig.isPushConfigured(this)) {
@@ -604,30 +762,7 @@ public class MainActivity extends Activity {
 
     private void showAgentOutput() {
         if (!saveConfigOnly()) return;
-        TextView text = new TextView(this);
-        text.setText(CheckmkOutput.build(this));
-        text.setTextIsSelectable(true);
-        text.setTypeface(Typeface.MONOSPACE);
-        text.setTextColor(C_TEXT);
-        text.setTextSize(12);
-        text.setPadding(dp(16), dp(16), dp(16), dp(16));
-        text.setBackgroundColor(C_BG);
-
-        ScrollView scroller = new ScrollView(this);
-        scroller.setBackgroundColor(C_BG);
-        scroller.addView(text);
-
-        AlertDialog dialog = new AlertDialog.Builder(this)
-                .setTitle("Checkmk agent output")
-                .setView(scroller)
-                .setPositiveButton("CLOSE", null)
-                .create();
-        dialog.setOnShowListener(d -> {
-            if (dialog.getButton(AlertDialog.BUTTON_POSITIVE) != null) {
-                dialog.getButton(AlertDialog.BUTTON_POSITIVE).setTextColor(C_GREEN);
-            }
-        });
-        dialog.show();
+        showTextDialog("Checkmk agent output", CheckmkOutput.build(this), null, null);
         updateDashboard();
     }
 

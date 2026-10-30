@@ -18,8 +18,9 @@ if [ -f /proc/meminfo ]; then
         total_gb=$(awk "BEGIN {printf \"%.2f\", $mem_total/1024/1024}")
         used_gb=$(awk "BEGIN {printf \"%.2f\", $mem_used/1024/1024}")
         free_gb=$(awk "BEGIN {printf \"%.2f\", $mem_avail/1024/1024}")
+        warn_gb=$(awk "BEGIN {printf \"%.2f\", ($mem_total/1024/1024)*($WARN/100)}")
+        crit_gb=$(awk "BEGIN {printf \"%.2f\", ($mem_total/1024/1024)*($CRIT/100)}")
     else
-        # Fallback to free command
         total_gb_int=$(free -g | awk '/^Mem:/{print $2}')
         used_gb_int=$(free -g | awk '/^Mem:/{print $3}')
         free_gb_int=$(free -g | awk '/^Mem:/{print $4}')
@@ -27,9 +28,10 @@ if [ -f /proc/meminfo ]; then
         total_gb=$(printf "%.2f" "$total_gb_int")
         used_gb=$(printf "%.2f" "$used_gb_int")
         free_gb=$(printf "%.2f" "$free_gb_int")
+        warn_gb=$(awk "BEGIN {printf \"%.2f\", $total_gb*($WARN/100)}")
+        crit_gb=$(awk "BEGIN {printf \"%.2f\", $total_gb*($CRIT/100)}")
     fi
 else
-    # Fallback for systems without /proc/meminfo
     total_gb_int=$(free -g | awk '/^Mem:/{print $2}')
     used_gb_int=$(free -g | awk '/^Mem:/{print $3}')
     free_gb_int=$(free -g | awk '/^Mem:/{print $4}')
@@ -37,9 +39,11 @@ else
     total_gb=$(printf "%.2f" "$total_gb_int")
     used_gb=$(printf "%.2f" "$used_gb_int")
     free_gb=$(printf "%.2f" "$free_gb_int")
+    warn_gb=$(awk "BEGIN {printf \"%.2f\", $total_gb*($WARN/100)}")
+    crit_gb=$(awk "BEGIN {printf \"%.2f\", $total_gb*($CRIT/100)}")
 fi
 
-# Determine status
+# Tentukan status alert
 status=0
 status_txt="OK"
 if [ "$pct" -ge "$CRIT" ]; then
@@ -50,5 +54,8 @@ elif [ "$pct" -ge "$WARN" ]; then
     status_txt="Warning"
 fi
 
-# Output in clean Checkmk format using unicode vertical bar ❘
-echo "$status \"Info_RAM_Usage\" - Status : $status_txt ❘ Used: ${pct}% ❘ Used Space: ${used_gb} GB ❘ Free: ${free_gb} GB ❘ Total: ${total_gb} GB"
+# Susun perfdata: 2 metrik (GB dan %) dipisahkan tanda pipe |
+perfdata="ram_used=${used_gb}GB;${warn_gb};${crit_gb};0;${total_gb}|ram_percent=${pct}%;${WARN};${CRIT};0;100"
+
+# Output format Checkmk local check
+echo "$status \"Info_RAM_Usage\" $perfdata Status : $status_txt ❘ Used: ${pct}% ❘ Used Space: ${used_gb} GB ❘ Free: ${free_gb} GB ❘ Total: ${total_gb} GB"

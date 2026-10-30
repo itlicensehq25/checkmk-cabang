@@ -1,0 +1,13 @@
+# Auto-detect text files and perform LF normalization
+* text=auto
+
+# Enforce LF for all shell scripts and Linux binaries/plugins
+*.sh text eol=lf
+*.linux text eol=lf
+mk_inventory.linux text eol=lf
+
+# Enforce CRLF for Windows specific batch and powershell scripts
+*.bat text eol=crlf
+*.cmd text eol=crlf
+*.ps1 text eol=crlf
+*.vbs text eol=crlf

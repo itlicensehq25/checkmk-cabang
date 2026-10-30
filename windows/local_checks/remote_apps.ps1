@@ -28,28 +28,16 @@ if ($NeedUpdate) {
     
     # --- 1. DETEKSI ANYDESK ---
     $AnyDeskID = ""
-    # Coba eksekusi CLI AnyDesk jika ada
-    $AnyExe = "C:\Program Files (x86)\AnyDesk\AnyDesk.exe"
-    if (-not (Test-Path $AnyExe)) { $AnyExe = "C:\Program Files\AnyDesk\AnyDesk.exe" }
-    if (-not (Test-Path $AnyExe)) { $AnyExe = (Get-Command anydesk.exe -ErrorAction SilentlyContinue).Path }
-    
-    if ($AnyExe -and (Test-Path $AnyExe)) {
-        try {
-            $AnyDeskID = (& $AnyExe --get-id | Out-String).Trim()
-        } catch {}
-    }
-    # Fallback ke file sistem AnyDesk system.conf jika CLI kosong
-    if (-not $AnyDeskID) {
-        $AnyConfPath = "$env:ProgramData\AnyDesk\system.conf"
-        if (Test-Path $AnyConfPath) {
-            $AnyConf = Get-Content $AnyConfPath -ErrorAction SilentlyContinue
-            $IdLine = $AnyConf | Where-Object { $_ -like "ad.id=*" }
-            if ($IdLine) {
-                $AnyDeskID = ($IdLine -replace "ad.id=", "").Trim()
-            }
+    # Check common system configuration path
+    $AnyConfPath = "$env:ProgramData\AnyDesk\system.conf"
+    if (Test-Path $AnyConfPath) {
+        $AnyConf = Get-Content $AnyConfPath -ErrorAction SilentlyContinue
+        $IdLine = $AnyConf | Where-Object { $_ -like "ad.id=*" }
+        if ($IdLine) {
+            $AnyDeskID = ($IdLine -replace "ad.id=", "").Trim()
         }
     }
-    # Fallback ke Registry
+    # Check registry as fallback
     if (-not $AnyDeskID) {
         $AnyDeskID = Get-ItemPropertyValue -Path "HKCU:\Software\AnyDesk\Client" -Name "ad.id" -ErrorAction SilentlyContinue
     }
@@ -60,32 +48,13 @@ if ($NeedUpdate) {
     
     # --- 2. DETEKSI RUSTDESK ---
     $RustDeskID = ""
-    # Coba eksekusi CLI rustdesk.exe --get-id | Out-String
-    $RustExe = "C:\Program Files\RustDesk\rustdesk.exe"
-    if (-not (Test-Path $RustExe)) { $RustExe = "C:\Program Files (x86)\RustDesk\rustdesk.exe" }
-    if (-not (Test-Path $RustExe)) { $RustExe = (Get-Command rustdesk.exe -ErrorAction SilentlyContinue).Path }
-    
-    if ($RustExe -and (Test-Path $RustExe)) {
-        try {
-            $RustDeskID = (& $RustExe --get-id | Out-String).Trim()
-        } catch {}
-    }
-    
-    if (-not $RustDeskID) {
-        try {
-            $RustDeskID = (rustdesk.exe --get-id 2>$null | Out-String).Trim()
-        } catch {}
-    }
-    
-    # Fallback ke berkas konfigurasi rustdesk.toml jika CLI tidak mengembalikan ID
-    if (-not $RustDeskID) {
-        $RustConfPath = "$env:ProgramData\RustDesk\config\rustdesk.toml"
-        if (Test-Path $RustConfPath) {
-            $RustConf = Get-Content $RustConfPath -ErrorAction SilentlyContinue
-            $IdLine = $RustConf | Where-Object { $_ -match "^\s*id\s*=" } | Select-Object -First 1
-            if ($IdLine) {
-                $RustDeskID = ($IdLine -split '=' | Select-Object -Last 1).Trim().Trim('"').Trim()
-            }
+    $RustConfPath = "$env:ProgramData\RustDesk\config\rustdesk.toml"
+    if (Test-Path $RustConfPath) {
+        $RustConf = Get-Content $RustConfPath -ErrorAction SilentlyContinue
+        # Look for id="xxx" or id = "xxx"
+        $IdLine = $RustConf | Where-Object { $_ -match "^\s*id\s*=" } | Select-Object -First 1
+        if ($IdLine) {
+            $RustDeskID = ($IdLine -split '=' | Select-Object -Last 1).Trim().Trim('"').Trim()
         }
     }
     
@@ -93,14 +62,14 @@ if ($NeedUpdate) {
         $RemoteList += "RustDesk ID: $RustDeskID"
     }
     
-    # Format Detail Output (Sama persis seperti Linux & README.md)
+    # Format Detail Output
     if ($RemoteList.Count -gt 0) {
         $Details = $RemoteList -join " | "
     } else {
         $Details = "No remote apps detected."
     }
     
-    $Output = "0 `"Info_Remote_Support`" - Status : OK | $Details"
+    $Output = "0 `"Remote_Apps`" - Status : OK | $Details"
     $Output | Out-File -FilePath $CacheFile -Encoding utf8 -Force
 }
 

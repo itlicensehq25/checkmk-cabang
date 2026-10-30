@@ -156,3 +156,4 @@ if ($NeedUpdate) {
 
 # Output cache content
 Get-Content $CacheFile -ErrorAction SilentlyContinue
+
