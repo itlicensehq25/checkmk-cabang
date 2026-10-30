@@ -20,7 +20,7 @@
 
 ## 1. Latar Belakang & Tujuan Pembaruan Terpusat
 
-Untuk memastikan pemantauan perangkat operasional di seluruh cabang (PC Kasir, Backoffice, Laptop Operasional, dan Mobile PDA Scanner) memiliki keandalan tinggi, keseragaman metrik, serta keamanan jaringan yang ketat, IT OPS NASIONAL merilis pembaruan arsitektur besar melalui repositori terpusat **`itlicensehq25/checkmk-cabang`**.
+Untuk memastikan pemantauan perangkat operasional di seluruh cabang sehingga memiliki keandalan tinggi, keseragaman metrik, serta keamanan jaringan yang ketat, IT OPS NASIONAL merilis pembaruan arsitektur besar melalui repositori terpusat **`itlicensehq25/checkmk-cabang`**.
 
 Pembaruan ini menyelesaikan sejumlah kendala operasional yang ditemukan di lapangan:
 * Port monitoring Android yang sebelumnya terbuka tanpa filter kini diamankan dengan whitelist IP Server Cabang.
@@ -55,7 +55,7 @@ Pembaruan ini menyelesaikan sejumlah kendala operasional yang ditemukan di lapan
      * **Server Checkmk Cabang** (misal `192.168.122.10` atau IP server cabang masing-masing).
      * **Internet** (`8.8.8.8`).
   3. Hasil ping disimpan di memori lokal PDA selama 1 jam sebelum dikirim ke Checkmk dalam 3 baris terpisah (`Ping_Gateway`, `Ping_Server_Checkmk`, `Ping_8.8.8.8`).
-  4. **Retensi 30 Hari (CCTV Loop):** File riwayat `ping_history.log` menyimpan data 30 hari. Saat hari ke-31 tiba, baris log lama otomatis dibersihkan sehingga kapasitas memori PDA tetap aman (~8 MB).
+  4. **Retensi 30 Hari :** File riwayat `ping_history.log` menyimpan data 30 hari. Saat hari ke-31 tiba, baris log lama otomatis dibersihkan sehingga kapasitas memori PDA tetap aman (~8 MB).
 * **Berkas:** `android/app/src/main/java/com/bcp/checkmkagent/PingMonitor.java`
 
 ### D. Pelacak Roaming Access Point Wi-Fi (`WifiRoamingTracker.java`)
@@ -83,7 +83,7 @@ Pembaruan ini menyelesaikan sejumlah kendala operasional yang ditemukan di lapan
   ```
 * **Solusi:** Seluruh skrip shell di repositori dinormalisasi ke format **Unix LF** murni (`\n`). Repositori dilengkapi [.gitattributes](.gitattributes) dan seluruh pipeline `curl` disisipi filter sanitasi `tr -d '\r'`.
 
-### B. Aktivasi Driver Kipas Desktop Modern (MSI H610 & Nuvoton NCT6687D)
+### B. Aktivasi Driver Kipas Desktop Modern
 * **Kasus Lapangan:** Host kasir cabang dengan motherboard desktop modern **MSI MS-7E02 (MSI PRO H610M-E DDR4)** dan prosesor **Intel Core i3-14100** sebelumnya tidak dapat membaca RPM kipas pendingin dan hanya memunculkan status `FAN Speed: EC/Auto`.
 * **Solusi & Hasil Pengujian Langsung:**
   * Chip Super I/O pada motherboard MSI seri H610/B660/B760 adalah **Nuvoton NCT6687D**.
