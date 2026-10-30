@@ -43,21 +43,30 @@ ensure_vendor_fan_modules() {
             modprobe nct6687 2>/dev/null || true
             modprobe nct6775 2>/dev/null || true
             ;;
-        *GIGABYTE*)
-            # Motherboard Desktop Gigabyte (B760, B660, B550, dll.) menggunakan chip ITE (IT8689E/IT87xx)
-            modprobe it87 ignore_resource_conflict=1 2>/dev/null || modprobe it87 2>/dev/null || true
+        *GIGABYTE*|*AORUS*)
+            # Motherboard Desktop Gigabyte (B760, B660, B550, dll.) menggunakan chip ITE (IT8689E/IT87xx) & gigabyte_wmi
+            modprobe gigabyte_wmi 2>/dev/null || true
+            modprobe it87 ignore_resource_conflict=1 force_id=0x8689 2>/dev/null || modprobe it87 ignore_resource_conflict=1 2>/dev/null || true
             if [ -w /etc/modules ] && lsmod | grep -q "it87" && ! grep -q "^it87" /etc/modules 2>/dev/null; then
                 echo "it87" >> /etc/modules 2>/dev/null || true
-                echo "options it87 ignore_resource_conflict=1" > /etc/modprobe.d/it87.conf 2>/dev/null || true
+                echo "options it87 ignore_resource_conflict=1 force_id=0x8689" > /etc/modprobe.d/it87.conf 2>/dev/null || true
             fi
             ;;
-        *LENOVO*|*THINKPAD*)
-            modprobe thinkpad_acpi 2>/dev/null || true
-            ;;
         *ASUS*|*ASUSTEK*)
+            # Motherboard Desktop ASUS (PRIME, TUF, ROG, ProArt) -> asus_ec_sensors & nct6775
+            modprobe asus_ec_sensors 2>/dev/null || true
             modprobe asus_nb_wmi 2>/dev/null || true
             modprobe asus_wmi 2>/dev/null || true
             modprobe nct6775 2>/dev/null || true
+            ;;
+        *ASROCK*)
+            # Motherboard Desktop ASRock -> nct6775 & w83627ehf
+            modprobe nct6775 2>/dev/null || true
+            modprobe w83627ehf 2>/dev/null || true
+            ;;
+        *LENOVO*|*THINKPAD*|*THINKCENTRE*)
+            modprobe thinkpad_acpi 2>/dev/null || true
+            modprobe ideapad_laptop 2>/dev/null || true
             ;;
         *HP*|*HEWLETT*)
             modprobe hp_wmi 2>/dev/null || true
@@ -71,10 +80,12 @@ ensure_vendor_fan_modules() {
     esac
 
     # Modul Super I/O populer pada motherboard PC Desktop modern (MSI/ASUS/Gigabyte/ASRock)
+    modprobe asus_ec_sensors 2>/dev/null || true
     modprobe nct6683 force=1 2>/dev/null || modprobe nct6683 2>/dev/null || true
     modprobe nct6687 2>/dev/null || true
     modprobe nct6775 2>/dev/null || true
-    modprobe it87 2>/dev/null || true
+    modprobe it87 ignore_resource_conflict=1 2>/dev/null || modprobe it87 2>/dev/null || true
+    modprobe gigabyte_wmi 2>/dev/null || true
 }
 
 # ------------------------------------------------------------------------------

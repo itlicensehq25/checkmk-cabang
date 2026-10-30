@@ -266,14 +266,30 @@ for script in "${SCRIPTS[@]}"; do
 done
 
 # ==============================================================================
-# Setup Sensor Kernel Modules (Khusus Motherboard Desktop & Laptop Baru)
+# Setup Sensor Kernel Modules & Otomasi GRUB (Multi-Motherboard Hardware)
 # ==============================================================================
-echo -e "\e[32m[INFO] Memeriksa modul kernel hardware sensor (Motherboard & CPU Fan)...\e[0m"
+echo -e "\e[32m[INFO] Memeriksa modul kernel hardware sensor & konfigurasi ACPI Motherboard...\e[0m"
+
+# 1. Otomasi Patch GRUB acpi_enforce_resources=lax agar BIOS tidak mengunci register sensor
+if [ -f /etc/default/grub ]; then
+    if ! grep -q "acpi_enforce_resources=lax" /etc/default/grub 2>/dev/null; then
+        echo "[INFO] Mengonfigurasi GRUB: menambahkan acpi_enforce_resources=lax untuk bypass ACPI sensor lock..."
+        sed -i 's/GRUB_CMDLINE_LINUX_DEFAULT="\(.*\)"/GRUB_CMDLINE_LINUX_DEFAULT="\1 acpi_enforce_resources=lax"/' /etc/default/grub
+        sed -i 's/  */ /g' /etc/default/grub
+        if command -v update-grub >/dev/null 2>&1; then
+            update-grub >/dev/null 2>&1 || true
+        elif command -v grub2-mkconfig >/dev/null 2>&1; then
+            grub2-mkconfig -o /boot/grub2/grub.cfg >/dev/null 2>&1 || true
+        fi
+        echo -e "\e[32m[SUCCESS] Parameter GRUB acpi_enforce_resources=lax berhasil dikonfigurasi otomatis!\e[0m"
+    fi
+fi
+
 SYS_VENDOR=$(cat /sys/class/dmi/id/sys_vendor 2>/dev/null || echo "")
 SYS_PRODUCT=$(cat /sys/class/dmi/id/product_name 2>/dev/null || echo "")
 COMBINED_DMI="${SYS_VENDOR} ${SYS_PRODUCT}"
 
-# Deteksi Motherboard Desktop MSI (seperti MS-7E02 / H610 / B660 / B760) -> Nuvoton NCT6687D
+# 2. Deteksi Motherboard Desktop MSI (seperti MS-7E02 / H610 / B660 / B760) -> Nuvoton NCT6687D
 if echo "$COMBINED_DMI" | grep -iqE "MICRO-STAR|MSI|MS-7"; then
     echo "[INFO] Terdeteksi motherboard MSI ($SYS_PRODUCT). Mengonfigurasi modul sensor Nuvoton nct6683..."
     modprobe nct6683 force=1 2>/dev/null || modprobe nct6683 2>/dev/null || modprobe nct6775 2>/dev/null || true
@@ -283,20 +299,56 @@ if echo "$COMBINED_DMI" | grep -iqE "MICRO-STAR|MSI|MS-7"; then
     fi
 fi
 
-# Deteksi Motherboard Desktop Gigabyte (seperti B760M DS3H, B660, dll.) -> ITE IT8689E/IT87xx
+# 3. Deteksi Motherboard Desktop Gigabyte (seperti B760M DS3H, B660, dll.) -> ITE IT8689E/IT87xx
 if echo "$COMBINED_DMI" | grep -iqE "GIGABYTE"; then
-    echo "[INFO] Terdeteksi motherboard Gigabyte ($SYS_PRODUCT). Mengonfigurasi modul sensor ITE it87..."
-    modprobe it87 ignore_resource_conflict=1 2>/dev/null || modprobe it87 2>/dev/null || true
-    if lsmod | grep -q "it87"; then
-        echo "options it87 ignore_resource_conflict=1" > /etc/modprobe.d/it87.conf 2>/dev/null || true
-        grep -q "^it87" /etc/modules 2>/dev/null || echo "it87" >> /etc/modules 2>/dev/null || true
+    echo "[INFO] Terdeteksi motherboard Gigabyte ($SYS_PRODUCT). Mengonfigurasi modul sensor ITE it87 & gigabyte_wmi..."
+    modprobe gigabyte_wmi 2>/dev/null || true
+    modprobe it87 ignore_resource_conflict=1 force_id=0x8689 2>/dev/null || modprobe it87 ignore_resource_conflict=1 2>/dev/null || true
+    echo "options it87 ignore_resource_conflict=1 force_id=0x8689" > /etc/modprobe.d/it87.conf 2>/dev/null || true
+    if ! grep -q "^it87" /etc/modules 2>/dev/null; then
+        echo "it87" >> /etc/modules 2>/dev/null || true
     fi
 fi
 
-# Deteksi Dell Laptop / Desktop
+# 4. Deteksi Motherboard Desktop ASUS (seperti PRIME B760, B660, TUF, ROG) -> asus_ec_sensors / nct6775
+if echo "$COMBINED_DMI" | grep -iqE "ASUS|ASUSTEK"; then
+    echo "[INFO] Terdeteksi motherboard ASUS ($SYS_PRODUCT). Mengonfigurasi modul asus_ec_sensors & nct6775..."
+    modprobe asus_ec_sensors 2>/dev/null || true
+    modprobe asus_wmi 2>/dev/null || true
+    modprobe nct6775 2>/dev/null || true
+    if lsmod | grep -q "asus_ec_sensors"; then
+        grep -q "^asus_ec_sensors" /etc/modules 2>/dev/null || echo "asus_ec_sensors" >> /etc/modules 2>/dev/null || true
+    fi
+    if lsmod | grep -q "nct6775"; then
+        grep -q "^nct6775" /etc/modules 2>/dev/null || echo "nct6775" >> /etc/modules 2>/dev/null || true
+    fi
+fi
+
+# 5. Deteksi Motherboard Desktop ASRock (seperti B760M, B660, Pro4, Phantom) -> nct6775 / w83627ehf
+if echo "$COMBINED_DMI" | grep -iqE "ASROCK"; then
+    echo "[INFO] Terdeteksi motherboard ASRock ($SYS_PRODUCT). Mengonfigurasi modul sensor Nuvoton/Winbond..."
+    modprobe nct6775 2>/dev/null || true
+    modprobe w83627ehf 2>/dev/null || true
+    if lsmod | grep -q "nct6775"; then
+        grep -q "^nct6775" /etc/modules 2>/dev/null || echo "nct6775" >> /etc/modules 2>/dev/null || true
+    fi
+fi
+
+# 6. Deteksi Dell Laptop / Desktop / OptiPlex / Vostro
 if echo "$COMBINED_DMI" | grep -iqE "DELL"; then
     echo "[INFO] Terdeteksi hardware Dell. Mengaktifkan modul dell_smm_hwmon..."
     modprobe dell_smm_hwmon ignore_dmi=1 restricted=0 2>/dev/null || modprobe dell_smm_hwmon 2>/dev/null || true
+    echo "options dell_smm_hwmon ignore_dmi=1 restricted=0" > /etc/modprobe.d/dell_smm_hwmon.conf 2>/dev/null || true
+    if ! grep -q "^dell_smm_hwmon" /etc/modules 2>/dev/null; then
+        echo "dell_smm_hwmon" >> /etc/modules 2>/dev/null || true
+    fi
+fi
+
+# 7. Deteksi Lenovo Laptop / ThinkCentre / ThinkPad
+if echo "$COMBINED_DMI" | grep -iqE "LENOVO|THINKPAD|THINKCENTRE"; then
+    echo "[INFO] Terdeteksi hardware Lenovo. Mengaktifkan modul thinkpad_acpi & ideapad_laptop..."
+    modprobe thinkpad_acpi 2>/dev/null || true
+    modprobe ideapad_laptop 2>/dev/null || true
 fi
 
 # ==============================================================================
