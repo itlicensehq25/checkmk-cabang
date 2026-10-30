@@ -283,6 +283,16 @@ if echo "$COMBINED_DMI" | grep -iqE "MICRO-STAR|MSI|MS-7"; then
     fi
 fi
 
+# Deteksi Motherboard Desktop Gigabyte (seperti B760M DS3H, B660, dll.) -> ITE IT8689E/IT87xx
+if echo "$COMBINED_DMI" | grep -iqE "GIGABYTE"; then
+    echo "[INFO] Terdeteksi motherboard Gigabyte ($SYS_PRODUCT). Mengonfigurasi modul sensor ITE it87..."
+    modprobe it87 ignore_resource_conflict=1 2>/dev/null || modprobe it87 2>/dev/null || true
+    if lsmod | grep -q "it87"; then
+        echo "options it87 ignore_resource_conflict=1" > /etc/modprobe.d/it87.conf 2>/dev/null || true
+        grep -q "^it87" /etc/modules 2>/dev/null || echo "it87" >> /etc/modules 2>/dev/null || true
+    fi
+fi
+
 # Deteksi Dell Laptop / Desktop
 if echo "$COMBINED_DMI" | grep -iqE "DELL"; then
     echo "[INFO] Terdeteksi hardware Dell. Mengaktifkan modul dell_smm_hwmon..."

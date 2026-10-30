@@ -43,6 +43,14 @@ ensure_vendor_fan_modules() {
             modprobe nct6687 2>/dev/null || true
             modprobe nct6775 2>/dev/null || true
             ;;
+        *GIGABYTE*)
+            # Motherboard Desktop Gigabyte (B760, B660, B550, dll.) menggunakan chip ITE (IT8689E/IT87xx)
+            modprobe it87 ignore_resource_conflict=1 2>/dev/null || modprobe it87 2>/dev/null || true
+            if [ -w /etc/modules ] && lsmod | grep -q "it87" && ! grep -q "^it87" /etc/modules 2>/dev/null; then
+                echo "it87" >> /etc/modules 2>/dev/null || true
+                echo "options it87 ignore_resource_conflict=1" > /etc/modprobe.d/it87.conf 2>/dev/null || true
+            fi
+            ;;
         *LENOVO*|*THINKPAD*)
             modprobe thinkpad_acpi 2>/dev/null || true
             ;;
