@@ -175,18 +175,19 @@ public final class PingMonitor {
      */
     public static String getCheckmkSection(Context context) {
         ensureInitialized(context);
+        SharedPreferences p = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE);
         long nowMs = System.currentTimeMillis();
         long nowSec = nowMs / 1000L;
 
-        String lineLocal = formatCheckmkPingLine24h(context, SERVICE_LOCAL, TARGET_LOCAL, false, 100.0, 250.0, nowMs);
-        String lineNet = formatCheckmkPingLine24h(context, SERVICE_INTERNET, TARGET_INTERNET, false, 150.0, 300.0, nowMs);
+        String lineLocal = getTargetCheckmkLineWithDetails(context, p, TARGET_LOCAL, TARGET_LOCAL, TARGET_LOCAL, SERVICE_LOCAL, 100.0, 250.0, nowMs);
+        String lineNet = getTargetCheckmkLineWithDetails(context, p, TARGET_INTERNET, TARGET_INTERNET, TARGET_INTERNET, SERVICE_INTERNET, 150.0, 300.0, nowMs);
 
         String gatewayIp = AgentConfig.getGatewayIp(context);
         String lineGw;
         if (!AgentConfig.isValidIpv4(gatewayIp)) {
-            lineGw = "1 \"" + SERVICE_GATEWAY + "\" - Rerata Ping: Belum Diisi | Kondisi 24 Jam: Wajib isi IP Gateway Cabang di Settings PDA";
+            lineGw = "1 \"" + SERVICE_GATEWAY + "\" - Status : WARNING | Target : Belum Diisi | Remark : Wajib isi IP Gateway Cabang di Settings PDA";
         } else {
-            lineGw = formatCheckmkPingLine24h(context, SERVICE_GATEWAY, gatewayIp, true, 50.0, 150.0, nowMs);
+            lineGw = getTargetCheckmkLineWithDetails(context, p, TARGET_GATEWAY_KEY, gatewayIp, gatewayIp + " (Gateway Cabang)", SERVICE_GATEWAY, 50.0, 150.0, nowMs);
         }
 
         StringBuilder sb = new StringBuilder();
@@ -310,12 +311,6 @@ public final class PingMonitor {
         ed.putFloat(key(targetKey, "last_avg_ms"), Double.isNaN(sample.avgMs) ? -1f : (float) sample.avgMs);
         ed.putFloat(key(targetKey, "last_loss"), (float) sample.lossPercent);
 
-        boolean isGw = TARGET_GATEWAY_KEY.equals(targetKey);
-        String line24h = formatCheckmkPingLine24h(
-                context, serviceName, sample.target, isGw, warnRttMs, critRttMs, sample.timestampMs);
-        ed.putString(key(targetKey, "pub_line"), line24h);
-        ed.putLong(key(targetKey, "pub_sec"), sample.timestampMs / 1000L);
-
         long elapsedMs = sample.timestampMs - winStartMs;
         boolean hourCompleted = (elapsedMs >= REPORT_INTERVAL_MS) || (winSamples >= SAMPLES_PER_HOUR);
 
@@ -324,6 +319,15 @@ public final class PingMonitor {
             double avgMs = rttCount > 0 ? (rttSum / (double) rttCount) : Double.NaN;
             double minMs = rttMin >= 0f ? rttMin : Double.NaN;
             double maxMs = rttMax >= 0f ? rttMax : Double.NaN;
+
+            String hourlyLine = formatCheckmkPingLine(
+                    serviceName, targetDisplay, winSamples, winTx, winRx, lossPct,
+                    avgMs, minMs, maxMs, winFailMin, winStartMs, sample.timestampMs,
+                    sample.avgMs, warnRttMs, critRttMs, true);
+
+            long pubSec = sample.timestampMs / 1000L;
+            ed.putString(key(targetKey, "pub_line"), hourlyLine);
+            ed.putLong(key(targetKey, "pub_sec"), pubSec);
 
             appendHourlySummaryLog(context, targetDisplay, winSamples, winTx, winRx, lossPct, avgMs, minMs, maxMs, winStartMs, sample.timestampMs);
 
@@ -352,20 +356,100 @@ public final class PingMonitor {
         ed.apply();
     }
 
-    private static String formatCheckmkPingLine24h(
-            Context context, String serviceName, String targetIp, boolean isGateway,
-            double warnRttMs, double critRttMs, long nowMs) {
+    private static String getTargetCheckmkLineWithDetails(
+            Context context, SharedPreferences p, String targetKey, String targetIp,
+            String targetDisplay, String serviceName, double warnRttMs, double critRttMs, long nowMs) {
+        String baseLine = p.getString(key(targetKey, "pub_line"), null);
+        if (baseLine != null && baseLine.contains("ms;")) {
+            baseLine = null;
+        }
+        if (baseLine != null) {
+            int idx = baseLine.indexOf("\\n");
+            if (idx >= 0) baseLine = baseLine.substring(0, idx);
+        }
+        if (baseLine == null || baseLine.isEmpty()) {
+            baseLine = buildCurrentBufferLine(p, targetKey, targetDisplay, serviceName, warnRttMs, critRttMs);
+        }
+        String details24h = format24hDetailsStr(context, targetIp, nowMs);
+        return baseLine + "\\n" + details24h;
+    }
 
+    private static String buildCurrentBufferLine(
+            SharedPreferences p, String targetKey, String targetDisplay, String serviceName,
+            double warnRttMs, double critRttMs) {
+        int winSamples = p.getInt(key(targetKey, "win_samples"), 0);
+        int winTx = p.getInt(key(targetKey, "win_tx"), 0);
+        int winRx = p.getInt(key(targetKey, "win_rx"), 0);
+        int winFailMin = p.getInt(key(targetKey, "win_fail_min"), 0);
+        int rttCount = p.getInt(key(targetKey, "win_rtt_count"), 0);
+        float rttSum = p.getFloat(key(targetKey, "win_rtt_sum"), 0f);
+        float rttMin = p.getFloat(key(targetKey, "win_rtt_min"), -1f);
+        float rttMax = p.getFloat(key(targetKey, "win_rtt_max"), -1f);
+        long winStartMs = p.getLong(key(targetKey, "win_start_ms"), System.currentTimeMillis());
+        long lastSampleMs = p.getLong(key(targetKey, "last_sample_ms"), System.currentTimeMillis());
+        float lastAvg = p.getFloat(key(targetKey, "last_avg_ms"), -1f);
+
+        double lossPct = winTx > 0 ? ((winTx - winRx) * 100.0 / winTx) : 0.0;
+        double avgMs = rttCount > 0 ? (rttSum / (double) rttCount) : Double.NaN;
+        double minMs = rttMin >= 0f ? rttMin : Double.NaN;
+        double maxMs = rttMax >= 0f ? rttMax : Double.NaN;
+        double lastMs = lastAvg >= 0f ? lastAvg : Double.NaN;
+
+        return formatCheckmkPingLine(
+                serviceName, targetDisplay, winSamples, winTx, winRx, lossPct,
+                avgMs, minMs, maxMs, winFailMin, winStartMs, lastSampleMs,
+                lastMs, warnRttMs, critRttMs, false);
+    }
+
+    private static String formatCheckmkPingLine(
+            String serviceName, String targetDisplay, int samples, int tx, int rx, double lossPct,
+            double avgMs, double minMs, double maxMs, int failMinutes,
+            long startMs, long endMs, double lastMs,
+            double warnRttMs, double critRttMs, boolean completedHour) {
+
+        int state = 0;
+        if (tx > 0 && (lossPct >= 50.0 || (!Double.isNaN(avgMs) && avgMs >= critRttMs))) {
+            state = 2;
+        } else if (tx > 0 && (lossPct >= 20.0 || (!Double.isNaN(avgMs) && avgMs >= warnRttMs))) {
+            state = 1;
+        }
+
+        double rtaSec = !Double.isNaN(avgMs) ? (avgMs / 1000.0) : 0.0;
+        String rtaMetric = String.format(Locale.US, "rta=%.4f;%.3f;%.3f;0", rtaSec, warnRttMs / 1000.0, critRttMs / 1000.0);
+        String plMetric = String.format(Locale.US, "pl=%.1f%%;20;50;0;100", lossPct);
+        String minMetric = !Double.isNaN(minMs) ? String.format(Locale.US, "|rtmin=%.4f", minMs / 1000.0) : "";
+        String maxMetric = !Double.isNaN(maxMs) ? String.format(Locale.US, "|rtmax=%.4f", maxMs / 1000.0) : "";
+        String metrics = rtaMetric + "|" + plMetric + minMetric + maxMetric;
+
+        String avgStr = !Double.isNaN(avgMs) ? String.format(Locale.US, "%.1f ms", avgMs) : "TIMEOUT";
+        String minMaxStr = (!Double.isNaN(minMs) && !Double.isNaN(maxMs))
+                ? String.format(Locale.US, "%.1f/%.1f ms", minMs, maxMs) : "N/A";
+        String lastStr = !Double.isNaN(lastMs) ? String.format(Locale.US, "%.1f ms", lastMs) : "TIMEOUT";
+        String windowStr = formatTimeShort(startMs) + "-" + formatTimeShort(endMs);
+        String modeLabel = completedHour
+                ? "1h Summary (" + samples + "x4=" + tx + " pkt)"
+                : "Buffering 1h on PDA (" + samples + "/60m, " + tx + " pkt)";
+
+        String stateStr = state == 2 ? "CRITICAL" : state == 1 ? "WARNING" : "OK";
+
+        return state + " \"" + serviceName + "\" " + metrics
+                + " Status : " + stateStr
+                + " | Target : " + targetDisplay
+                + " | Mode : " + modeLabel
+                + " | Loss : " + String.format(Locale.US, "%.1f%% (%d/%d rx)", lossPct, rx, tx)
+                + " | Avg RTT : " + avgStr
+                + " | Min/Max : " + minMaxStr
+                + " | Last : " + lastStr
+                + " | Timeout Min : " + failMinutes + "/" + Math.max(1, samples)
+                + " | Window : " + windowStr
+                + " | Log : 30d Rolling on PDA";
+    }
+
+    private static String format24hDetailsStr(Context context, String targetIp, long nowMs) {
         String cutoffStr = formatDateTime(nowMs - (24L * 3600L * 1000L));
 
-        int totalTx = 0;
-        int totalRx = 0;
         double rttSum = 0.0;
         int rttCnt = 0;
-        double rttMin = -1.0;
-        double rttMax = -1.0;
-        int lastTx = 0;
-        int lastRx = -1;
         boolean inOutage = false;
         int outageCnt = 0;
         String outStart = "";
@@ -425,41 +509,25 @@ public final class PingMonitor {
                     prevDay = day;
                     prevMin = curMin;
 
-                    int tx = 4;
                     int rx = 0;
-                    double minV = -1.0;
                     double avgV = -1.0;
-                    double maxV = -1.0;
 
                     int pipeIdx = rest.indexOf('|');
                     if (pipeIdx >= 0) {
                         String[] tokens = rest.substring(pipeIdx + 1).trim().split("\\s+");
                         for (String tok : tokens) {
-                            if (tok.startsWith("tx=")) {
-                                try { tx = Integer.parseInt(tok.substring(3)); } catch (Exception ignored) {}
-                            } else if (tok.startsWith("rx=")) {
+                            if (tok.startsWith("rx=")) {
                                 try { rx = Integer.parseInt(tok.substring(3)); } catch (Exception ignored) {}
-                            } else if (tok.startsWith("min=") && tok.endsWith("ms")) {
-                                try { minV = Double.parseDouble(tok.substring(4, tok.length() - 2)); } catch (Exception ignored) {}
                             } else if (tok.startsWith("avg=") && tok.endsWith("ms")) {
                                 try { avgV = Double.parseDouble(tok.substring(4, tok.length() - 2)); } catch (Exception ignored) {}
-                            } else if (tok.startsWith("max=") && tok.endsWith("ms")) {
-                                try { maxV = Double.parseDouble(tok.substring(4, tok.length() - 2)); } catch (Exception ignored) {}
                             }
                         }
                     }
 
-                    totalTx += tx;
-                    totalRx += rx;
                     if (avgV >= 0) {
                         rttSum += avgV;
                         rttCnt++;
                     }
-                    if (minV >= 0 && (rttMin < 0 || minV < rttMin)) rttMin = minV;
-                    if (maxV >= 0 && (rttMax < 0 || maxV > rttMax)) rttMax = maxV;
-
-                    lastTx = tx;
-                    lastRx = rx;
 
                     boolean isDown = (rx == 0 || avgV < 0);
                     if (isDown) {
@@ -486,36 +554,7 @@ public final class PingMonitor {
         }
 
         double avgMs = rttCnt > 0 ? (rttSum / rttCnt) : -1.0;
-        double lossPct = totalTx > 0 ? (((totalTx - totalRx) * 100.0) / totalTx) : 0.0;
-        double lastLoss = lastTx > 0 ? (((lastTx - lastRx) * 100.0) / lastTx) : 0.0;
-
-        int state = 0;
-        if (totalTx > 0 && (lastRx == 0 || lossPct >= 50.0 || (avgMs >= 0 && avgMs >= critRttMs))) {
-            state = 2;
-        } else if (totalTx > 0 && (lossPct >= 20.0 || (avgMs >= 0 && avgMs >= warnRttMs))) {
-            state = 1;
-        }
-
-        double rtaSec = avgMs >= 0 ? (avgMs / 1000.0) : 0.0;
-        String rtaMetric = String.format(Locale.US, "rta=%.4f;%.3f;%.3f;0", rtaSec, warnRttMs / 1000.0, critRttMs / 1000.0);
-        String plMetric = String.format(Locale.US, "pl=%.1f%%;20;50;0;100", lossPct);
-        String minMetric = rttMin >= 0 ? String.format(Locale.US, "|rtmin=%.4f", rttMin / 1000.0) : "";
-        String maxMetric = rttMax >= 0 ? String.format(Locale.US, "|rtmax=%.4f", rttMax / 1000.0) : "";
-        String metrics = rtaMetric + "|" + plMetric + minMetric + maxMetric;
-
-        String rerataStr;
-        if (lastRx == 0) {
-            rerataStr = avgMs >= 0
-                    ? String.format(Locale.US, "TIMEOUT (Rerata 24 Jam: %.1f ms)", avgMs)
-                    : "TIMEOUT";
-        } else if (avgMs >= 0) {
-            rerataStr = String.format(Locale.US, "%.1f ms", avgMs);
-        } else {
-            rerataStr = "N/A";
-        }
-        if (isGateway) {
-            rerataStr = rerataStr + " (" + targetIp + ")";
-        }
+        String rerataStr = avgMs >= 0 ? String.format(Locale.US, "%.1f ms", avgMs) : "TIMEOUT";
 
         String kondisiStr;
         if (outageCnt == 0) {
@@ -532,9 +571,7 @@ public final class PingMonitor {
             kondisiStr = String.format(Locale.US, "Putus %dx (%s)", outageCnt, jb.toString());
         }
 
-        return state + " \"" + serviceName + "\" " + metrics
-                + " Rerata Ping: " + rerataStr
-                + " | Kondisi 24 Jam: " + kondisiStr;
+        return "Rerata Ping (24 Jam) : " + rerataStr + " | Kondisi Jaringan (24 Jam) : " + kondisiStr;
     }
 
     private static PingSample executePing(String target, int count, long timestampMs) {

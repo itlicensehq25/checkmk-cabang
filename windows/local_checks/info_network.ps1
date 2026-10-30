@@ -296,28 +296,75 @@ function Invoke-PrunePingLogs30Days {
 }
 
 # ------------------------------------------------------------------------------
-# 6. FUNGSI FORMAT BARIS OUTPUT CHECKMK (RERATA PING & KONDISI JARINGAN 24 JAM)
+# 6. FUNGSI FORMAT BARIS OUTPUT CHECKMK (SUMMARY 1 JAM + DETAILS KONDISI 24 JAM)
 # ------------------------------------------------------------------------------
-function Format-CheckmkPingLine24h {
+function Format-CheckmkPingLine {
     param(
         [string]$ServiceName,
-        [string]$TargetIp,
-        [bool]$IsGateway,
+        [string]$TargetDisplay,
+        [int]$Samples,
+        [int]$Tx,
+        [int]$Rx,
+        [double]$LossPct,
+        [double]$AvgMs,
+        [double]$MinMs,
+        [double]$MaxMs,
+        [int]$FailMinutes,
+        [long]$StartEpoch,
+        [long]$EndEpoch,
+        [double]$LastMs,
         [double]$WarnRttMs,
-        [double]$CritRttMs
+        [double]$CritRttMs,
+        [bool]$CompletedHour
     )
+
+    $state = 0
+    if ($Tx -gt 0 -and ($LossPct -ge 50.0 -or ($AvgMs -ge 0 -and $AvgMs -ge $CritRttMs))) {
+        $state = 2
+    } elseif ($Tx -gt 0 -and ($LossPct -ge 20.0 -or ($AvgMs -ge 0 -and $AvgMs -ge $WarnRttMs))) {
+        $state = 1
+    }
+
+    # Konversi ms ke detik (s) untuk metrik bawaan Checkmk (rta, rtmin, rtmax)
+    # agar Perf-O-Meter dan grafik Checkmk otomatis merender satuan ms dengan benar
+    $rtaSec  = if ($AvgMs -ge 0) { $AvgMs / 1000.0 } else { 0.0 }
+    $warnSec = ($WarnRttMs / 1000.0).ToString("F3", $Inv)
+    $critSec = ($CritRttMs / 1000.0).ToString("F3", $Inv)
+
+    $rtaMetric = "rta=$($rtaSec.ToString('F4', $Inv));$warnSec;$critSec;0"
+    $plMetric  = "pl=$($LossPct.ToString('F1', $Inv))%;20;50;0;100"
+    $minMetric = if ($MinMs -ge 0) { "|rtmin=$(($MinMs / 1000.0).ToString('F4', $Inv))" } else { "" }
+    $maxMetric = if ($MaxMs -ge 0) { "|rtmax=$(($MaxMs / 1000.0).ToString('F4', $Inv))" } else { "" }
+    $metrics   = "$rtaMetric|$plMetric$minMetric$maxMetric"
+
+    $avgStr    = if ($AvgMs -ge 0) { "$($AvgMs.ToString('F1', $Inv)) ms" } else { "TIMEOUT" }
+    $minMaxStr = if ($MinMs -ge 0 -and $MaxMs -ge 0) { "$($MinMs.ToString('F1', $Inv))/$($MaxMs.ToString('F1', $Inv)) ms" } else { "N/A" }
+    $lastStr   = if ($LastMs -ge 0) { "$($LastMs.ToString('F1', $Inv)) ms" } else { "TIMEOUT" }
+
+    $startDt   = [DateTimeOffset]::FromUnixTimeSeconds($StartEpoch).LocalDateTime.ToString("HH:mm", $Inv)
+    $endDt     = [DateTimeOffset]::FromUnixTimeSeconds($EndEpoch).LocalDateTime.ToString("HH:mm", $Inv)
+    $windowStr = "$startDt-$endDt"
+
+    $modeLabel = if ($CompletedHour) {
+        "1h Summary (${Samples}x4=${Tx} pkt)"
+    } else {
+        "Buffering 1h (${Samples}/60m, ${Tx} pkt)"
+    }
+
+    $stateStr = switch ($state) { 2 { "CRITICAL" } 1 { "WARNING" } default { "OK" } }
+    $maxSamples = [Math]::Max(1, $Samples)
+    $lossFormatted = "$($LossPct.ToString('F1', $Inv))% ($Rx/$Tx rx)"
+
+    return "$state `"$ServiceName`" $metrics Status : $stateStr | Target : $TargetDisplay | Mode : $modeLabel | Loss : $lossFormatted | Avg RTT : $avgStr | Min/Max : $minMaxStr | Last : $lastStr | Timeout Min : $FailMinutes/$maxSamples | Window : $windowStr | Log : 30d Rolling"
+}
+
+function Format-24hDetailsStr {
+    param([string]$TargetIp)
 
     $cutoffStr = (Get-Date).AddHours(-24).ToString("yyyy-MM-dd HH:mm:ss", $Inv)
 
-    $totalTx   = 0
-    $totalRx   = 0
     $rttSum    = 0.0
     $rttCnt    = 0
-    $rttMin    = -1.0
-    $rttMax    = -1.0
-    $lastTx    = 0
-    $lastRx    = -1
-    $lastAvg   = -1.0
     $inOutage  = $false
     $outageCnt = 0
     $outStart  = ""
@@ -330,7 +377,6 @@ function Format-CheckmkPingLine24h {
         try {
             $fs = [System.IO.FileStream]::new($PingLogFile, [System.IO.FileMode]::Open, [System.IO.FileAccess]::Read, [System.IO.FileShare]::ReadWrite)
             try {
-                # 24 jam log (1440 menit x 3 target) maksimal ~450 KB; baca 650 KB terakhir agar super cepat (< 5ms)
                 $seekOffset = [Math]::Max(0L, $fs.Length - 665600L)
                 $fs.Seek($seekOffset, [System.IO.SeekOrigin]::Begin) | Out-Null
                 $reader = [System.IO.StreamReader]::new($fs, [System.Text.Encoding]::UTF8)
@@ -374,30 +420,15 @@ function Format-CheckmkPingLine24h {
                     $prevDay = $day
                     $prevMin = $curMin
 
-                    $tx   = 4
                     $rx   = 0
-                    $minV = -1.0
                     $avgV = -1.0
-                    $maxV = -1.0
-
-                    if ($rest -match 'tx=(\d+)')      { $tx   = [int]$Matches[1] }
                     if ($rest -match 'rx=(\d+)')      { $rx   = [int]$Matches[1] }
-                    if ($rest -match 'min=([0-9.]+)') { $minV = [double]::Parse($Matches[1], $Inv) }
                     if ($rest -match 'avg=([0-9.]+)') { $avgV = [double]::Parse($Matches[1], $Inv) }
-                    if ($rest -match 'max=([0-9.]+)') { $maxV = [double]::Parse($Matches[1], $Inv) }
 
-                    $totalTx += $tx
-                    $totalRx += $rx
                     if ($avgV -ge 0) {
                         $rttSum += $avgV
                         $rttCnt++
                     }
-                    if ($minV -ge 0 -and ($rttMin -lt 0 -or $minV -lt $rttMin)) { $rttMin = $minV }
-                    if ($maxV -ge 0 -and ($rttMax -lt 0 -or $maxV -gt $rttMax)) { $rttMax = $maxV }
-
-                    $lastTx  = $tx
-                    $lastRx  = $rx
-                    $lastAvg = $avgV
 
                     $isDown = ($rx -eq 0 -or $avgV -lt 0)
                     if ($isDown) {
@@ -427,39 +458,8 @@ function Format-CheckmkPingLine24h {
         $outageList.Add("$outStart-sekarang")
     }
 
-    $avgMs    = if ($rttCnt -gt 0) { $rttSum / $rttCnt } else { -1.0 }
-    $lossPct  = if ($totalTx -gt 0) { (($totalTx - $totalRx) * 100.0) / $totalTx } else { 0.0 }
-    $lastLoss = if ($lastTx -gt 0) { (($lastTx - $lastRx) * 100.0) / $lastTx } else { 0.0 }
-
-    $state = 0
-    if ($totalTx -gt 0 -and ($lastRx -eq 0 -or $lossPct -ge 50.0 -or ($avgMs -ge 0 -and $avgMs -ge $CritRttMs))) {
-        $state = 2
-    } elseif ($totalTx -gt 0 -and ($lossPct -ge 20.0 -or ($avgMs -ge 0 -and $avgMs -ge $WarnRttMs))) {
-        $state = 1
-    }
-
-    # Konversi ms ke detik (s) untuk metrik bawaan Checkmk (rta, rtmin, rtmax)
-    # agar Perf-O-Meter dan grafik Checkmk otomatis merender satuan ms dengan benar
-    $rtaSec  = if ($avgMs -ge 0) { $avgMs / 1000.0 } else { 0.0 }
-    $warnSec = ($WarnRttMs / 1000.0).ToString("F3", $Inv)
-    $critSec = ($CritRttMs / 1000.0).ToString("F3", $Inv)
-
-    $rtaMetric = "rta=$($rtaSec.ToString('F4', $Inv));$warnSec;$critSec;0"
-    $plMetric  = "pl=$($lossPct.ToString('F1', $Inv))%;20;50;0;100"
-    $minMetric = if ($rttMin -ge 0) { "|rtmin=$(($rttMin / 1000.0).ToString('F4', $Inv))" } else { "" }
-    $maxMetric = if ($rttMax -ge 0) { "|rtmax=$(($rttMax / 1000.0).ToString('F4', $Inv))" } else { "" }
-    $metrics   = "$rtaMetric|$plMetric$minMetric$maxMetric"
-
-    $rerataStr = if ($lastRx -eq 0) {
-        if ($avgMs -ge 0) { "TIMEOUT (Rerata 24 Jam: $($avgMs.ToString('F1', $Inv)) ms)" } else { "TIMEOUT" }
-    } elseif ($avgMs -ge 0) {
-        "$($avgMs.ToString('F1', $Inv)) ms"
-    } else {
-        "N/A"
-    }
-    if ($IsGateway) {
-        $rerataStr = "$rerataStr ($TargetIp)"
-    }
+    $avgMs     = if ($rttCnt -gt 0) { $rttSum / $rttCnt } else { -1.0 }
+    $rerataStr = if ($avgMs -ge 0) { "$($avgMs.ToString('F1', $Inv)) ms" } else { "TIMEOUT" }
 
     $kondisiStr = if ($outageCnt -eq 0) {
         "Normal / Tidak Ada Putus (0x)"
@@ -474,7 +474,7 @@ function Format-CheckmkPingLine24h {
         "Putus ${outageCnt}x ($joined)"
     }
 
-    return "$state `"$ServiceName`" $metrics Rerata Ping: $rerataStr | Kondisi 24 Jam: $kondisiStr"
+    return "Rerata Ping (24 Jam) : $rerataStr | Kondisi Jaringan (24 Jam) : $kondisiStr"
 }
 
 # ------------------------------------------------------------------------------
@@ -603,9 +603,6 @@ function Update-SingleTargetAccumulator {
     $TState.last_avg_ms     = [double]$Sample.avg
     $TState.last_loss       = [double]$Sample.loss
 
-    $TState.pub_line = ""
-    $TState.pub_sec  = $NowEpoch
-
     $elapsedSec = $NowEpoch - $TState.win_start_sec
     $hourCompleted = ($elapsedSec -ge $ReportIntervalSec) -or ($TState.win_samples -ge $SamplesPerHour)
 
@@ -614,6 +611,27 @@ function Update-SingleTargetAccumulator {
         $avgMs   = if ($TState.win_rtt_count -gt 0) { $TState.win_rtt_sum / $TState.win_rtt_count } else { -1.0 }
         $minMs   = [double]$TState.win_rtt_min
         $maxMs   = [double]$TState.win_rtt_max
+
+        $hourlyLine = Format-CheckmkPingLine `
+            -ServiceName $ServiceName `
+            -TargetDisplay $TargetDisplay `
+            -Samples $TState.win_samples `
+            -Tx $TState.win_tx `
+            -Rx $TState.win_rx `
+            -LossPct $lossPct `
+            -AvgMs $avgMs `
+            -MinMs $minMs `
+            -MaxMs $maxMs `
+            -FailMinutes $TState.win_fail_min `
+            -StartEpoch $TState.win_start_sec `
+            -EndEpoch $NowEpoch `
+            -LastMs $Sample.avg `
+            -WarnRttMs $WarnRttMs `
+            -CritRttMs $CritRttMs `
+            -CompletedHour $true
+
+        $TState.pub_line = $hourlyLine
+        $TState.pub_sec  = $NowEpoch
 
         # Catat baris rangkuman 1 jam ke dalam ping_history.log
         $startShort = [DateTimeOffset]::FromUnixTimeSeconds($TState.win_start_sec).LocalDateTime.ToString("HH:mm", $Inv)
@@ -711,19 +729,59 @@ function Invoke-MinutePingCollection {
 
 function Get-TargetCheckmkOutputLine {
     param(
+        [hashtable]$TState,
         [string]$ServiceName,
         [string]$TargetIp,
-        [bool]$IsGateway,
+        [string]$TargetDisplay,
         [double]$WarnRttMs,
-        [double]$CritRttMs
+        [double]$CritRttMs,
+        [long]$NowEpoch
     )
 
-    return Format-CheckmkPingLine24h `
-        -ServiceName $ServiceName `
-        -TargetIp $TargetIp `
-        -IsGateway $IsGateway `
-        -WarnRttMs $WarnRttMs `
-        -CritRttMs $CritRttMs
+    $baseLine = $TState.pub_line
+    # Abaikan cache lama jika masih memakai format metrik rta=...ms;
+    if (-not [string]::IsNullOrWhiteSpace($baseLine) -and ($baseLine -like "*ms;*")) {
+        $baseLine = ""
+    }
+    if (-not [string]::IsNullOrWhiteSpace($baseLine)) {
+        $idx = $baseLine.IndexOf("\n")
+        if ($idx -ge 0) {
+            $baseLine = $baseLine.Substring(0, $idx)
+        }
+    }
+
+    if ([string]::IsNullOrWhiteSpace($baseLine)) {
+        $samples = [int]$TState.win_samples
+        $tx      = [int]$TState.win_tx
+        $rx      = [int]$TState.win_rx
+        $lossPct = if ($tx -gt 0) { (($tx - $rx) * 100.0) / $tx } else { 0.0 }
+        $avgMs   = if ($TState.win_rtt_count -gt 0) { $TState.win_rtt_sum / $TState.win_rtt_count } else { -1.0 }
+        $minMs   = [double]$TState.win_rtt_min
+        $maxMs   = [double]$TState.win_rtt_max
+        $startSec = if ($TState.win_start_sec -gt 0) { [long]$TState.win_start_sec } else { $NowEpoch }
+        $endSec   = if ($TState.last_sample_sec -gt 0) { [long]$TState.last_sample_sec } else { $NowEpoch }
+
+        $baseLine = Format-CheckmkPingLine `
+            -ServiceName $ServiceName `
+            -TargetDisplay $TargetDisplay `
+            -Samples $samples `
+            -Tx $tx `
+            -Rx $rx `
+            -LossPct $lossPct `
+            -AvgMs $avgMs `
+            -MinMs $minMs `
+            -MaxMs $maxMs `
+            -FailMinutes $TState.win_fail_min `
+            -StartEpoch $startSec `
+            -EndEpoch $endSec `
+            -LastMs $TState.last_avg_ms `
+            -WarnRttMs $WarnRttMs `
+            -CritRttMs $CritRttMs `
+            -CompletedHour $false
+    }
+
+    $details24h = Format-24hDetailsStr -TargetIp $TargetIp
+    return "$baseLine\n$details24h"
 }
 
 # ------------------------------------------------------------------------------
@@ -813,17 +871,18 @@ if ($ActiveAdapters.Count -eq 0) {
 # ------------------------------------------------------------------------------
 # 10. CETAK 3 BARIS PING MONITOR KE CHECKMK (192.168.122.10, 8.8.8.8, & Gateway)
 # ------------------------------------------------------------------------------
+$NowEpochOut = [DateTimeOffset]::UtcNow.ToUnixTimeSeconds()
 $GatewayIpOut = Get-BranchGatewayIP
 
-$LineLocal = Get-TargetCheckmkOutputLine -ServiceName $ServiceLocal -TargetIp $TargetLocal -IsGateway $false -WarnRttMs 100.0 -CritRttMs 250.0
-$LineNet   = Get-TargetCheckmkOutputLine -ServiceName $ServiceInternet -TargetIp $TargetInternet -IsGateway $false -WarnRttMs 150.0 -CritRttMs 300.0
+$LineLocal = Get-TargetCheckmkOutputLine -TState $PingState.targets["local"] -ServiceName $ServiceLocal -TargetIp $TargetLocal -TargetDisplay $TargetLocal -WarnRttMs 100.0 -CritRttMs 250.0 -NowEpoch $NowEpochOut
+$LineNet   = Get-TargetCheckmkOutputLine -TState $PingState.targets["internet"] -ServiceName $ServiceInternet -TargetIp $TargetInternet -TargetDisplay $TargetInternet -WarnRttMs 150.0 -CritRttMs 300.0 -NowEpoch $NowEpochOut
 
 Write-Output $LineLocal
 Write-Output $LineNet
 
 if (Test-ValidIPv4 $GatewayIpOut) {
-    $LineGw = Get-TargetCheckmkOutputLine -ServiceName $ServiceGateway -TargetIp $GatewayIpOut -IsGateway $true -WarnRttMs 50.0 -CritRttMs 150.0
+    $LineGw = Get-TargetCheckmkOutputLine -TState $PingState.targets["gateway"] -ServiceName $ServiceGateway -TargetIp $GatewayIpOut -TargetDisplay "$GatewayIpOut (Gateway Cabang)" -WarnRttMs 50.0 -CritRttMs 150.0 -NowEpoch $NowEpochOut
     Write-Output $LineGw
 } else {
-    Write-Output "1 `"$ServiceGateway`" - Rerata Ping: Belum Terdeteksi | Kondisi 24 Jam: Isi IP Gateway Cabang di $GatewayConfigFile"
+    Write-Output "1 `"$ServiceGateway`" - Status : WARNING | Target : Belum Terdeteksi | Remark : Isi IP Gateway Cabang di $GatewayConfigFile"
 }
