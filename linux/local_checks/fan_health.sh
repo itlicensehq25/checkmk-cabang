@@ -44,12 +44,21 @@ ensure_vendor_fan_modules() {
             modprobe nct6775 2>/dev/null || true
             ;;
         *GIGABYTE*|*AORUS*)
-            # Motherboard Desktop Gigabyte (B760, B660, B550, dll.) menggunakan chip ITE (IT8689E/IT87xx) & gigabyte_wmi
+            # Motherboard Desktop Gigabyte (B760, B660, B550, dll.) menggunakan chip ITE (IT8689E/IT8628E/IT87xx) & gigabyte_wmi
             modprobe gigabyte_wmi 2>/dev/null || true
-            modprobe it87 ignore_resource_conflict=1 force_id=0x8689 2>/dev/null || modprobe it87 ignore_resource_conflict=1 2>/dev/null || true
-            if [ -w /etc/modules ] && lsmod | grep -q "it87" && ! grep -q "^it87" /etc/modules 2>/dev/null; then
-                echo "it87" >> /etc/modules 2>/dev/null || true
-                echo "options it87 ignore_resource_conflict=1 force_id=0x8689" > /etc/modprobe.d/it87.conf 2>/dev/null || true
+            # Urutan prioritas probe ITE: 0x8628 (terbukti sukses B760/IT8689E) -> native auto -> 0x8689 -> 0x8688 -> 0x8686
+            if ! lsmod | grep -q "it87"; then
+                modprobe it87 ignore_resource_conflict=1 force_id=0x8628 2>/dev/null || \
+                modprobe it87 ignore_resource_conflict=1 2>/dev/null || \
+                modprobe it87 ignore_resource_conflict=1 force_id=0x8689 2>/dev/null || \
+                modprobe it87 ignore_resource_conflict=1 force_id=0x8688 2>/dev/null || \
+                modprobe it87 ignore_resource_conflict=1 force_id=0x8686 2>/dev/null || true
+            fi
+            if [ -w /etc/modules ] && lsmod | grep -q "it87"; then
+                grep -q "^it87" /etc/modules 2>/dev/null || echo "it87" >> /etc/modules 2>/dev/null || true
+                if [ ! -f /etc/modprobe.d/it87.conf ] || grep -q "0x8689" /etc/modprobe.d/it87.conf 2>/dev/null; then
+                    echo "options it87 ignore_resource_conflict=1 force_id=0x8628" > /etc/modprobe.d/it87.conf 2>/dev/null || true
+                fi
             fi
             ;;
         *ASUS*|*ASUSTEK*)
@@ -84,7 +93,7 @@ ensure_vendor_fan_modules() {
     modprobe nct6683 force=1 2>/dev/null || modprobe nct6683 2>/dev/null || true
     modprobe nct6687 2>/dev/null || true
     modprobe nct6775 2>/dev/null || true
-    modprobe it87 ignore_resource_conflict=1 2>/dev/null || modprobe it87 2>/dev/null || true
+    modprobe it87 ignore_resource_conflict=1 force_id=0x8628 2>/dev/null || modprobe it87 ignore_resource_conflict=1 2>/dev/null || modprobe it87 2>/dev/null || true
     modprobe gigabyte_wmi 2>/dev/null || true
 }
 

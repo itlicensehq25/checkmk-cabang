@@ -299,12 +299,16 @@ if echo "$COMBINED_DMI" | grep -iqE "MICRO-STAR|MSI|MS-7"; then
     fi
 fi
 
-# 3. Deteksi Motherboard Desktop Gigabyte (seperti B760M DS3H, B660, dll.) -> ITE IT8689E/IT87xx
+# 3. Deteksi Motherboard Desktop Gigabyte (seperti B760M DS3H, B660, dll.) -> ITE IT8689E/IT8628E/IT87xx
 if echo "$COMBINED_DMI" | grep -iqE "GIGABYTE"; then
     echo "[INFO] Terdeteksi motherboard Gigabyte ($SYS_PRODUCT). Mengonfigurasi modul sensor ITE it87 & gigabyte_wmi..."
     modprobe gigabyte_wmi 2>/dev/null || true
-    modprobe it87 ignore_resource_conflict=1 force_id=0x8689 2>/dev/null || modprobe it87 ignore_resource_conflict=1 2>/dev/null || true
-    echo "options it87 ignore_resource_conflict=1 force_id=0x8689" > /etc/modprobe.d/it87.conf 2>/dev/null || true
+    modprobe it87 ignore_resource_conflict=1 force_id=0x8628 2>/dev/null || \
+    modprobe it87 ignore_resource_conflict=1 2>/dev/null || \
+    modprobe it87 ignore_resource_conflict=1 force_id=0x8689 2>/dev/null || \
+    modprobe it87 ignore_resource_conflict=1 force_id=0x8688 2>/dev/null || \
+    modprobe it87 ignore_resource_conflict=1 force_id=0x8686 2>/dev/null || true
+    echo "options it87 ignore_resource_conflict=1 force_id=0x8628" > /etc/modprobe.d/it87.conf 2>/dev/null || true
     if ! grep -q "^it87" /etc/modules 2>/dev/null; then
         echo "it87" >> /etc/modules 2>/dev/null || true
     fi

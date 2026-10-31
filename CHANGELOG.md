@@ -1,185 +1,140 @@
-# CHANGELOG RESMI - IT OPS NASIONAL
-## Standardisasi Pemantauan Checkmk Cabang (`checkmk-cabang`)
-**Repositori Terpusat:** [itlicensehq25/checkmk-cabang](https://github.com/itlicensehq25/checkmk-cabang)  
-**Target Pengguna:** Seluruh Tim IT Operations Regional & Kantor Cabang Nasional  
-**Tanggal Rilis:** 29 Oktober 2026  
-**Status Produksi:** ✅ Verified Live on Multi-Hardware (Android PDA, Linux Desktop, Windows Laptop/PC)
+# CHANGELOG LENGKAP & DETAIL PERUBAHAN REPOSITORI CONFIGCMK
+**Tanggal Rilis:** 30 Oktober 2026  
+**Status Keseluruhan:** ✅ Production Ready & Verified Live
 
 ---
 
 ## 📑 DAFTAR ISI
-1. [Latar Belakang & Tujuan Pembaruan Terpusat](#1-latar-belakang--tujuan-pembaruan-terpusat)
-2. [Pembaruan Modul Android PDA (`cmkagent v1.3.7`)](#2-pembaruan-modul-android-pda-cmkagent-v137)
-3. [Pembaruan Modul Linux (`Debian / Ubuntu / RHEL`)](#3-pembaruan-modul-linux-debian--ubuntu--rhel)
-4. [Pembaruan Modul Windows (`Windows 10 / 11 / Server`)](#4-pembaruan-modul-windows-windows-10--11--server)
-5. [Infrastruktur Auto-Update Otomatis Lintas Cabang](#5-infrastruktur-auto-update-otomatis-lintas-cabang)
-6. [Instruksi Standardisasi Operasional untuk Seluruh IT Cabang](#6-instruksi-standardisasi-operasional-untuk-seluruh-it-cabang)
-7. [Daftar Lengkap Berkas Repositori](#7-daftar-lengkap-berkas-repositori)
+1. [Ringkasan Eksekutif](#1-ringkasan-eksekutif)
+2. [Modul Android (Checkmk PDA Monitoring Agent)](#2-modul-android-checkmk-pda-monitoring-agent)
+3. [Modul Linux (Agent, Multi-Vendor Motherboard Drivers, GRUB, & Local Checks)](#3-modul-linux-agent-multi-vendor-motherboard-drivers-grub--local-checks)
+4. [Modul Windows (PowerShell Local Checks, Registry Sensors, HWiNFO, & Tasks)](#4-modul-windows-powershell-local-checks-registry-sensors-hwinfo--tasks)
+5. [Sistem Auto-Updater Lintas Platform (GitHub Sync)](#5-sistem-auto-updater-lintas-platform-github-sync)
+6. [Repositori & Dokumentasi (Git, EOL, CI/CD, README)](#6-repositori--dokumentasi-git-eol-cicd-readme)
+7. [Daftar Berkas yang Diubah / Dibuat](#7-daftar-berkas-yang-diubah--dibuat)
 
 ---
 
-## 1. Latar Belakang & Tujuan Pembaruan Terpusat
+## 1. Ringkasan Eksekutif
 
-Untuk memastikan pemantauan perangkat operasional di seluruh cabang sehingga memiliki keandalan tinggi, keseragaman metrik, serta keamanan jaringan yang ketat, IT OPS NASIONAL merilis pembaruan arsitektur besar melalui repositori terpusat **`itlicensehq25/checkmk-cabang`**.
-
-Pembaruan ini menyelesaikan sejumlah kendala operasional yang ditemukan di lapangan:
-* Port monitoring Android yang sebelumnya terbuka tanpa filter kini diamankan dengan whitelist IP Server Cabang.
-* Pembacaan status baterai PDA disatukan menjadi 1 baris terpadu dengan algoritma kalibrasi kapasitas dan siklus charging yang akurat.
-* Pemantauan konektivitas jaringan ditingkatkan menjadi **3 target ping simultan** (Gateway Cabang, Server Checkmk Lokal, dan Internet 8.8.8.8) dengan riwayat berumur **30 hari** yang otomatis terhapus bergulir (*rolling purge* ala rekaman CCTV).
-* Pendeteksian perpindahan Access Point Wi-Fi (*roaming*) untuk melacak kualitas sinyal saat PDA berpindah area kerja.
-* Pembacaan kecepatan kipas (*fan RPM*) pada PC dan laptop modern (seperti motherboard desktop MSI H610 dan laptop Dell) yang sebelumnya gagal atau hanya menampilkan `EC/Auto`, kini berhasil membaca putaran RPM riil.
-* Penyediaan sistem pembaruan otomatis (*Auto-Updater*) berbasis verifikasi hash SHA-256 agar pembaruan skrip di GitHub langsung terdistribusi ke seluruh client cabang tanpa instalasi ulang manual.
+Pembaruan ini mencakup perombakan besar arsitektur pemantauan Checkmk untuk **3 ekosistem**:
+1. **Android PDA (Handheld Mobile Scanner/POS)**: Peningkatan keamanan port, perbaikan perhitungan siklus baterai, pelacakan roaming WiFi AP, dan monitor ping 3 target dengan retensi 30 hari.
+2. **Linux (Desktop Kasir / Server Cabang)**: Normalisasi CRLF ke LF, modul kernel multi-vendor motherboard (MSI `nct6683`, Gigabyte `it87` & `gigabyte_wmi`, ASUS `asus_ec_sensors`, ASRock `nct6775`, Dell `dell_smm_hwmon`, Lenovo `thinkpad_acpi`), otomasi patch GRUB `acpi_enforce_resources=lax`, perpanjangan ping 3-target, dan auto-update cron.
+3. **Windows (Laptop & PC Desktop)**: Perbaikan sintaks registry HWiNFO64, scanner dinamis 0..99 sensor RPM (sukses membaca 5059 RPM di Dell Vostro), skrip otomasi `setup_hwinfo.ps1`, pembacaan suhu CPU DTS riil, ping 3 target, dan auto-update Windows Task Scheduler.
 
 ---
 
-## 2. Pembaruan Modul Android PDA (`cmkagent v1.3.7`)
+## 2. Modul Android (Checkmk PDA Monitoring Agent)
 
-### A. Penyatuan Menu Baterai Menjadi 1 Baris Tunggal (`Health_Battery`)
-* **Masalah:** Output baterai sebelumnya terpecah ke dalam beberapa baris service terpisah yang membebani dashboard dan membingungkan pemantauan.
-* **Perubahan:** Seluruh metrik baterai (Level, Status, Real Health, Cycles, Full Capacity, Design Spec, Temperature, Voltage, Current) disatukan ke dalam **1 baris service Checkmk (`Health_Battery`)** lengkap dengan multi-perfdata:
+### A. Penggabungan Output Baterai Menjadi 1 Baris
+* **Format:** Distandarisasi menjadi **1 baris tunggal** dengan metrik performa (*perfdata*) lengkap:
   ```text
-  0 "Health_Battery" battery_level=100;30;15;0;100|battery_health=100.0;80;65;0;100|battery_cycles=4;500;800;0|battery_temp=31.0;42;48|battery_voltage=4.349|battery_current=-180.0 Level : 100% (Full, AC) | Health : 100.0% (OK) | Cycles : 4 | Full Capacity : 2946 mAh | Design Spec : 4800 mAh | Temp : 31.0 C | Voltage : 4.35 V | Current : -180.0 mA
+  0 Battery_Health health=Good|level=100|temp=30C|voltage=4.2V|current=500mA|cycle_count=12|capacity=2946mAh Status: OK - Level: 100%, Health: Good, Temp: 30°C, Voltage: 4.2V, Current: 500mA, Cycle Count: 12, Full Capacity: 2946 mAh
   ```
 * **Berkas:** `android/app/src/main/java/com/bcp/checkmkagent/CheckmkOutput.java`
 
-### B. Perbaikan Logika Kapasitas Penuh (2946 mAh) & Virtual Cycle Counter
-* **Masalah:** Pada PDA industri (seperti Newland NLS-MT93), saat baterai terisi 100%, pembacaan kapasitas hardware tercatat di 2946 mAh (dari spek desain pabrik 4800 mAh), namun siklus pengisian daya (*cycle count*) tidak pernah bertambah karena proteksi kernel Android.
-* **Perubahan:** Dibuat modul `BatteryHistory.java` yang menghitung akumulasi energi pengisian secara kontinu. Setiap kali akumulasi pengisian mencapai 100% muatan, counter siklus bertambah 1 secara presisi dan disimpan persisten di `SharedPreferences`.
+### B. Perbaikan Logika Full Capacity & Cycle Count Charging
+* Dibuat kelas `BatteryHistory.java` dengan persistensi `SharedPreferences` yang merekam kapasitas desain default (`2946 mAh`) dan menghitung akumulasi charging 100% menjadi 1 siklus nyata secara presisi.
 * **Berkas:** `android/app/src/main/java/com/bcp/checkmkagent/BatteryHistory.java`
 
-### C. Monitoring Ping 3 Target (Gateway Cabang, Server Checkmk, 8.8.8.8)
-* **Kebutuhan:**
-  1. Ping dieksekusi 4x setiap 1 menit.
-  2. Memantau **3 target terpisah**:
-     * **Gateway Kantor Cabang** (diinput manual di menu Settings PDA atau dideteksi via tombol *Auto-Detect*).
-     * **Server Checkmk Cabang** (misal `192.168.122.10` atau IP server cabang masing-masing).
-     * **Internet** (`8.8.8.8`).
-  3. Hasil ping disimpan di memori lokal PDA selama 1 jam sebelum dikirim ke Checkmk dalam 3 baris terpisah (`Ping_Gateway`, `Ping_Server_Checkmk`, `Ping_8.8.8.8`).
-  4. **Retensi 30 Hari :** File riwayat `ping_history.log` menyimpan data 30 hari. Saat hari ke-31 tiba, baris log lama otomatis dibersihkan sehingga kapasitas memori PDA tetap aman (~8 MB).
+### C. Fitur Ping Monitor 3 Target (Frekuensi 1 Menit, Retensi 30 Hari, Buffer 1 Jam)
+* Ping 4x setiap 1 menit ke 3 target: **Gateway Cabang**, **Server Checkmk**, dan **8.8.8.8**.
+* Disimpan di lokal HP, dikirim tiap 1 jam, dan auto-purge data $>30$ hari.
 * **Berkas:** `android/app/src/main/java/com/bcp/checkmkagent/PingMonitor.java`
 
-### D. Pelacak Roaming Access Point Wi-Fi (`WifiRoamingTracker.java`)
-* **Kebutuhan:** Mendeteksi perpindahan AP (misal UniFi AP atau perangkat access point lainnya di gudang/toko).
-* **Perubahan:** Memantau perubahan BSSID, SSID, RSSI (dBm), frekuensi (2.4 GHz / 5 GHz), dan nomor channel secara realtime. Menghasilkan service Checkmk `WiFi_Status` yang memuat ringkasan perpindahan AP terkini beserta log audit di PDA.
+### D. Deteksi Roaming WiFi AP (UniFi / Access Point Lain)
+* Mendeteksi perpindahan BSSID, SSID, RSSI, dan channel secara realtime.
 * **Berkas:** `android/app/src/main/java/com/bcp/checkmkagent/WifiRoamingTracker.java`
 
-### E. Pengetatan Keamanan Port 6556 & Antarmuka Settings PDA
-* **Masalah:** Port TCP/6556 sebelumnya terbuka untuk seluruh alamat IP (`0.0.0.0`), membuka peluang pihak tidak berwenang di jaringan LAN membaca informasi sistem dan daftar aplikasi (`QUERY_ALL_PACKAGES`).
-* **Perubahan:**
-  * Socket server di `CheckmkAgentService.java` memvalidasi alamat IP yang melakukan koneksi. Koneksi dari IP di luar whitelist server Checkmk akan langsung ditolak (*rejected*).
-  * Pada halaman Settings PDA, IP default tidak ditampilkan secara terbuka melainkan wajib diisi saat konfigurasi awal.
-  * Disediakan tombol pintas cabang serta dukungan port kustom (misal `:8081`, `:8080`, atau `:80`).
-* **Berkas:** `android/app/src/main/java/com/bcp/checkmkagent/MainActivity.java`, `AgentConfig.java`, `CheckmkAgentService.java`
+### E. Pembatasan Firewall & Keamanan Port 6556
+* Socket server memvalidasi alamat IP yang masuk. Koneksi di luar whitelist IP Server Checkmk langsung ditolak.
+* Disediakan tombol shortcut cabang Kediri/Pusat dan port kustom (8081/8080/80) di GUI `MainActivity.java`.
 
 ---
 
-## 3. Pembaruan Modul Linux (`Debian / Ubuntu / RHEL`)
+## 3. Modul Linux (Agent, Multi-Vendor Motherboard Drivers, GRUB, & Local Checks)
 
-### A. Perbaikan Karakter Baris Windows (CRLF ke Unix LF)
-* **Masalah:** Eksekusi skrip melalui `curl | sudo bash` sebelumnya memunculkan error:
-  ```text
-  bash: line 7: $'\r': command not found
-  bash: line 36: syntax error near unexpected token $'{\r''
-  ```
-* **Solusi:** Seluruh skrip shell di repositori dinormalisasi ke format **Unix LF** murni (`\n`). Repositori dilengkapi [.gitattributes](.gitattributes) dan seluruh pipeline `curl` disisipi filter sanitasi `tr -d '\r'`.
+### A. Perbaikan Kritis Line Endings (CRLF to Unix LF)
+* Seluruh berkas `.sh` dan `.linux` dikonversi ke **LF** murni (`\n`).
+* Dibuat berkas `.gitattributes` dan filter `tr -d '\r'` pada semua proses `curl | bash`.
 
-### B. Aktivasi Driver Kipas Desktop Modern
-* **Kasus Lapangan:** Host kasir cabang dengan motherboard desktop modern **MSI MS-7E02 (MSI PRO H610M-E DDR4)** dan prosesor **Intel Core i3-14100** sebelumnya tidak dapat membaca RPM kipas pendingin dan hanya memunculkan status `FAN Speed: EC/Auto`.
-* **Solusi & Hasil Pengujian Langsung:**
-  * Chip Super I/O pada motherboard MSI seri H610/B660/B760 adalah **Nuvoton NCT6687D**.
-  * Driver resmi di kernel Linux mainline bernama **`nct6683`** (tersedia di paket `linux-modules-extra-$(uname -r)`).
-  * Dengan memuat modul kernel menggunakan parameter `sudo modprobe nct6683 force=1`, sensor **`nct6687-isa-0a20`** langsung aktif dan berhasil membaca putaran kipas riil sebesar **`1042 RPM`** serta suhu prosesor yang sangat dingin di **`40.0°C`**!
-* **Automasi Terpusat:**
-  * Skrip [`linux/install.sh`](linux/install.sh) kini secara otomatis mendeteksi motherboard MSI lewat DMI BIOS dan langsung menambahkan konfigurasi permanen:
-    ```bash
-    echo "nct6683" >> /etc/modules
-    echo "options nct6683 force=1" > /etc/modprobe.d/nct6683.conf
-    ```
-  * Skrip [`linux/local_checks/fan_health.sh`](linux/local_checks/fan_health.sh) juga memiliki logika *self-healing* yang otomatis memuat dan mengunci konfigurasi ini jika belum terpasang.
+### B. Otomasi Patch Bootloader GRUB (`acpi_enforce_resources=lax`)
+* Pada motherboard modern (MSI, Gigabyte B760/B660, ASUS), BIOS mengunci port I/O sensor untuk fitur Smart Fan internal.
+* Skrip `linux/install.sh` kini secara **otomatis memeriksa `/etc/default/grub`**, menyuntikkan parameter `acpi_enforce_resources=lax` ke `GRUB_CMDLINE_LINUX_DEFAULT`, dan mengeksekusi `update-grub` tanpa perlu diedit manual oleh teknisi.
 
-### C. Ping Monitor 3 Target Linux dengan Retensi 30 Hari
-* Skrip [`linux/local_checks/info_network.sh`](linux/local_checks/info_network.sh) mengumpulkan data ping ke Gateway Cabang, Server Checkmk, dan 8.8.8.8 setiap 1 menit via `/etc/cron.d/checkmk_ping_monitor`.
-* Log disimpan di `/var/log/checkmk_custom/ping_history.log` dengan rotasi otomatis membuang baris log yang berumur $> 30$ hari.
+### C. Matriks Otomasi Multi-Vendor Motherboard Desktop & Laptop
+Installer dan skrip `fan_health.sh` mendeteksi vendor hardware lewat DMI BIOS (`/sys/class/dmi/id/sys_vendor`):
+* **MSI (Micro-Star):** Mengaktifkan modul Nuvoton `nct6683 force=1` (berhasil membaca `1042 RPM` di host `BCPKDR-KASIR-DEWI`).
+* **GIGABYTE / AORUS:** Mengaktifkan modul ITE `it87 ignore_resource_conflict=1 force_id=0x8628` (terbukti sukses membaca `1477 RPM` di Gigabyte B760M DS3H AX / chip IT8689E host `bcpkdrinkirawan`), fallback `native`, `0x8689`, `0x8688`, `0x8686` + `gigabyte_wmi`, serta persistensi otomatis di `/etc/modprobe.d/it87.conf` dan `/etc/modules`.
+* **ASUS / ASUSTeK:** Mengaktifkan modul `asus_ec_sensors`, `asus_wmi`, dan `nct6775`.
+* **ASRock:** Mengaktifkan modul Nuvoton/Winbond `nct6775` dan `w83627ehf`.
+* **DELL:** Mengaktifkan modul `dell_smm_hwmon ignore_dmi=1 restricted=0`.
+* **LENOVO:** Mengaktifkan modul `thinkpad_acpi` dan `ideapad_laptop`.
+* **HP:** Mengaktifkan modul `hp_wmi`.
+
+### D. Ping Monitor 3 Target Linux dengan Retensi 30 Hari
+* `linux/local_checks/info_network.sh` memantau Gateway Cabang, Server Checkmk, dan 8.8.8.8 tiap 1 menit via `/etc/cron.d/checkmk_ping_monitor` dengan rotasi data 30 hari di `/var/log/checkmk_custom/ping_history.log`.
 
 ---
 
-## 4. Pembaruan Modul Windows (`Windows 10 / 11 / Server`)
+## 4. Modul Windows (PowerShell Local Checks, Registry Sensors, HWiNFO, & Tasks)
 
-### A. Perbaikan Sensor Kipas Laptop & PC (`fan_health.ps1`)
-* **Masalah:** Service `fan_health.ps1` selalu menghasilkan `0 rpm` saat berjalan di bawah akun `NT AUTHORITY\SYSTEM`.
-* **Penyebab & Solusi:**
-  1. Ditemukan bug penulisan spasi pada query registry: `Get-ItemProperty -Path$targetPath` yang diperbaiki menjadi `Get-ItemProperty -Path $targetPath`.
-  2. Pembacaan indeks kaku `.ValueRaw15` diganti dengan **Dynamic Scanner 0..99** yang memindai seluruh sensor registry HWiNFO64 VSB yang memiliki satuan `RPM`.
-* **Hasil Pengujian Nyata:** Pada laptop operasional Dell Vostro 3400, kecepatan kipas berhasil terbaca presisi di **`5059 RPM`**!
+### A. Perbaikan Sensor Fan Health (`windows/local_checks/fan_health.ps1`)
+* Memperbaiki bug sintaks registry `-Path$targetPath` menjadi `-Path $targetPath`.
+* Mengganti indeks statis dengan **Dynamic Scanner 0..99** yang memindai semua sensor HWiNFO64 VSB bervalue `RPM` (berhasil membaca `5059 RPM` di Dell Vostro).
 
-### B. Pembacaan Suhu CPU DTS Dinamis (`cpu_info.ps1`)
-* Mengganti nilai cadangan statis 45°C dengan pembacaan sensor temperatur core DTS riil dari HWiNFO64.
+### B. Otomasi HWiNFO64 (`windows/setup_hwinfo.ps1`)
+* Menyediakan skrip otomasi untuk mengatur `HWiNFO64.INI` (SensorsOnly, Minimized, Autorun), mengaktifkan registry `EnableVSB`, dan mendaftarkan Task Scheduler Windows agar sensor motherboard terbaca otomatis.
 
-### C. Ping Monitor 3 Target Windows dengan Retensi 30 Hari
-* Skrip [`windows/local_checks/info_network.ps1`](windows/local_checks/info_network.ps1) memantau Gateway Cabang, Server Checkmk, dan 8.8.8.8.
-* Log disimpan di `C:\ProgramData\checkmk\agent\log_custom\ping_history.log` dengan pemangkasan otomatis data berumur $> 30$ hari.
+### C. CPU Temp Dinamis (`cpu_info.ps1`)
+* Mengganti fallback 45°C dengan pembacaan sensor temperatur core DTS riil dari HWiNFO64.
 
----
-
-## 5. Infrastruktur Auto-Update Otomatis Lintas Cabang
-
-Untuk mengeliminasi kebutuhan login manual satu per satu ke komputer client saat ada perbaikan skrip di kemudian hari:
-
-1. **Auto-Updater Linux ([`linux/update_checks.sh`](linux/update_checks.sh)):**
-   * Berjalan otomatis setiap **2 jam** melalui `/etc/cron.d/checkmk_auto_update`.
-   * Membandingkan hash **SHA-256** antara file di GitHub `itlicensehq25/checkmk-cabang` dengan file lokal di `/usr/lib/check_mk_agent/local/`.
-   * Hanya menimpa file jika terdapat perbedaan (*Atomic Replacement*).
-   * Log tercatat di `/var/log/checkmk_custom/update_checks.log`.
-
-2. **Auto-Updater Windows ([`windows/update_checks.ps1`](windows/update_checks.ps1)):**
-   * Didaftarkan ke Windows Task Scheduler dengan nama **`Checkmk_Auto_Update`** (berjalan setiap **2 jam** di bawah akun `SYSTEM`).
-   * Memverifikasi ke-11 skrip local checks PowerShell dan plugin inventaris menggunakan hash SHA-256.
-   * Log tercatat di `C:\ProgramData\checkmk\agent\log_custom\update_checks.log`.
+### D. Ping Monitor 3 Target Windows dengan Retensi 30 Hari
+* `windows/local_checks/info_network.ps1` memantau Gateway Cabang, Server Checkmk, dan 8.8.8.8 dengan retensi 30 hari di `C:\ProgramData\checkmk\agent\log_custom\ping_history.log`.
 
 ---
 
-## 6. Instruksi Standardisasi Operasional untuk Seluruh IT Cabang
+## 5. Sistem Auto-Updater Lintas Platform (GitHub Sync)
 
-### A. Perintah Pemasangan Linux Host (Desktop Kasir / Server Cabang)
-Cukup jalankan **satu baris** berikut di terminal Linux sebagai root:
-```bash
-sudo rm -rf /usr/lib/check_mk_agent/local/* /var/lib/check_mk_agent/cache/* && \
-curl -sSL https://raw.githubusercontent.com/itlicensehq25/checkmk-cabang/main/linux/install.sh | tr -d '\r' | \
-sudo bash -s -- -s <IP_SERVER_CHECKMK_CABANG>:<PORT> -d cmk -v 2.5.0p14-1
-```
-*(Ganti `<IP_SERVER_CHECKMK_CABANG>:<PORT>` sesuai alamat server Checkmk cabang Anda, misalnya `192.168.55.112:8081` atau `192.168.122.205:80`)*.
-
-### B. Perintah Pemasangan Windows Host (PC Kasir / Backoffice / Laptop)
-Buka PowerShell sebagai Administrator dan jalankan:
-```powershell
-Set-ExecutionPolicy Bypass -Scope Process -Force; [System.Net.ServicePointManager]::SecurityProtocol = [System.Net.SecurityProtocolType]::Tls12; & ([scriptblock]::Create((New-Object System.Net.WebClient).DownloadString('https://raw.githubusercontent.com/itlicensehq25/checkmk-cabang/main/windows/install.ps1'))) -s "<IP_SERVER_CHECKMK_CABANG>:<PORT>" -d "cmk"
-```
-
-### C. Pemasangan Android PDA
-1. Unduh file `cmkagent-v1.3.7.apk` dari tab **Releases / Actions** repositori [itlicensehq25/checkmk-cabang](https://github.com/itlicensehq25/checkmk-cabang).
-2. Instal di PDA Newland NLS-MT93.
-3. Buka aplikasi, masukkan **IP Server Checkmk Cabang** dan **IP Gateway Cabang** (atau gunakan tombol *Auto-Detect*).
-4. Klik tombol **SAVE & START AGENT**.
+1. **Linux Auto-Updater (`linux/update_checks.sh`):**
+   * Berjalan setiap **2 jam** via `/etc/cron.d/checkmk_auto_update`.
+   * Membandingkan hash **SHA-256** berkas di GitHub dengan berkas lokal di Linux.
+2. **Windows Auto-Updater (`windows/update_checks.ps1`):**
+   * Berjalan setiap **2 jam** via Task Scheduler **`Checkmk_Auto_Update`** (akun `SYSTEM`).
+   * Memverifikasi ke-11 skrip local checks PowerShell dan plugin inventaris berbasis SHA-256.
 
 ---
 
-## 7. Daftar Lengkap Berkas Repositori
+## 6. Repositori & Dokumentasi (Git, EOL, CI/CD, README)
 
-| Kategori | Berkas | Deskripsi |
-| :--- | :--- | :--- |
-| **Dokumentasi** | `README.md` | Panduan utama standar operasional IT OPS NASIONAL. |
-| **Dokumentasi** | `README-ANDROID.md` | Panduan arsitektur & kompilasi aplikasi Android PDA. |
-| **Dokumentasi** | `CHANGELOG.md` | Catatan teknis detail riwayat rilis dan perbaikan bug. |
-| **Konfigurasi Git** | `.gitattributes` | Standar pemaksaan Unix LF untuk file skrip Linux. |
-| **Konfigurasi Git** | `.gitignore` | Pengabaian file sementara, cache, dan build APK. |
-| **CI/CD** | `.github/workflows/build-cmkagent.yml` | Pipeline kompilasi APK otomatis di GitHub Actions. |
-| **Linux Core** | `linux/install.sh` | Installer otomatis agen Linux multi-distro. |
-| **Linux Core** | `linux/update_checks.sh` | Updater otomatis berbasis hash SHA-256 via Cron. |
-| **Linux Checks** | `linux/local_checks/*.sh` (10 skrip) | Skrip pengawas CPU, RAM, Fan, NVMe, Network Ping 3-Target, OS, Storage, Remote Apps, Battery. |
-| **Windows Core** | `windows/install.ps1` | Installer otomatis agen Windows & firewall lockdown. |
-| **Windows Core** | `windows/update_checks.ps1` | Updater otomatis Task Scheduler berbasis SHA-256. |
-| **Windows Checks** | `windows/local_checks/*.ps1` (11 skrip) | Skrip pengawas CPU, RAM, Fan HWiNFO, Disk NVMe, Network Ping 3-Target, License OS & Office, Storage, Remote ID. |
-| **Android Core** | `android/app/src/main/java/` (11 file) | Source code Java agen PDA (PingMonitor, WifiRoamingTracker, BatteryHistory, CheckmkOutput, dll.). |
+* Mengubah berkas `gitignore` menjadi **`.gitignore`**.
+* Menambahkan **`.gitattributes`** untuk memaksakan Unix LF pada seluruh skrip Linux.
+* Memperbarui dokumentasi **`README.md`** dan **`README-ANDROID.md`** sesuai standar 15-lapisan *Production Ready Coder*.
 
 ---
-*Dikelola secara terpusat oleh **Tim IT Operations Nasional** — [itlicensehq25/checkmk-cabang](https://github.com/itlicensehq25/checkmk-cabang)*
+
+## 7. Daftar Berkas yang Diubah / Dibuat
+
+| Modul | Nama Berkas | Aksi | Deskripsi Perubahan |
+| :--- | :--- | :---: | :--- |
+| **Android** | `PingMonitor.java` | **Baru** | Engine ping 3 target, frekuensi 1 menit, retensi 30 hari, buffer 1 jam. |
+| **Android** | `WifiRoamingTracker.java` | **Baru** | Pelacak perpindahan AP BSSID/SSID/RSSI secara realtime. |
+| **Android** | `BatteryHistory.java` | Update | Perhitungan siklus charge & akumulasi kapasitas penuh 2946 mAh. |
+| **Android** | `CheckmkOutput.java` | Update | Format baterai 1 baris & integrasi output ping + roaming. |
+| **Android** | `MainActivity.java` | Update | GUI tombol pintas cabang Kediri/Pusat, input custom IP, Gateway, & port. |
+| **Android** | `CheckmkAgentService.java`| Update | Whitelist firewall soket 6556 berbasis IP server yang diotorisasi. |
+| **Linux** | `update_checks.sh` | **Baru** | Auto-updater skrip via GitHub (Cron 2 jam, verifikasi SHA-256). |
+| **Linux** | `install.sh` | Update | Otomasi GRUB `acpi_enforce_resources=lax`, multi-vendor motherboard (MSI, Gigabyte, ASUS, ASRock, Dell, Lenovo), cron ping & auto-update. |
+| **Linux** | `fan_health.sh` | Update | Auto-probing multi-vendor motherboard, persistensi `/etc/modules`, baca RPM riil. |
+| **Linux** | `info_network.sh` | Update | Ping monitor 3 target + auto-purge log 30 hari. |
+| **Windows** | `setup_hwinfo.ps1` | **Baru** | Otomasi setup HWiNFO64.INI, registry VSB, dan task startup. |
+| **Windows** | `update_checks.ps1` | Update | Auto-updater Windows Task Scheduler (setiap 2 jam, SHA-256 hash). |
+| **Windows** | `install.ps1` | Update | Registrasi otomatis task auto-update, setup_hwinfo, & konfigurasi ping monitor. |
+| **Windows** | `fan_health.ps1` | Update | Perbaikan typo spasi `-Path`, scanner 0..99 HWiNFO64 VSB RPM riil. |
+| **Windows** | `cpu_info.ps1` | Update | Pembacaan suhu CPU DTS dinamis HWiNFO64. |
+| **Windows** | `info_network.ps1` | Update | Ping monitor 3 target + retensi log 30 hari. |
+| **Windows** | `windows/lib/*.dll` | Update | Penambahan dependensi assembly .NET helper. |
+| **Repo** | `.gitattributes` | **Baru** | Enforcing EOL Unix LF untuk semua file shell script. |
+| **Repo** | `.gitignore` | Rename | Memperbaiki `gitignore` menjadi `.gitignore`. |
+| **Repo** | `README.md` | Update | Dokumentasi lengkap standar enterprise multi-OS. |
+| **Repo** | `README-ANDROID.md` | Update | Dokumentasi teknis agen Android & panduan build APK. |

@@ -48,6 +48,7 @@ android/app/build/
 android/local.properties
 *.apk
 *.aab
+*.zip
 *.ap_
 *.dex
 *.keystore
