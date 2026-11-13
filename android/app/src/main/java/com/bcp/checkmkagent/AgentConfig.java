@@ -70,45 +70,122 @@ public final class AgentConfig {
 
     public static String getAllowedServerDisplay(Context context) {
         String allow = getAllowedServer(context);
-        return allow.isEmpty() ? "Belum diisi (Wajib setting IP Server Cabang)" : allow;
+        if (allow.isEmpty() || "*".equals(allow)) {
+            return "All Private / Internal IP (Open)";
+        }
+        return allow + " (+ All Private/NAT)";
     }
 
     /**
-     * Returns the configured Branch Gateway IP entered manually during setup on the PDA.
+     * Returns the raw Gateway IP saved manually in Settings ("" if left blank for Auto-Detect).
      */
-    public static String getGatewayIp(Context context) {
+    public static String getConfiguredGatewayIp(Context context) {
         String value = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
                 .getString(KEY_GATEWAY_IP, "");
         return value == null ? "" : value.trim();
     }
 
+    /**
+     * Returns the configured Branch Gateway IP entered manually during setup on the PDA,
+     * or automatically detects the active Wi-Fi default gateway if left empty (like Windows/Linux).
+     */
+    public static String getGatewayIp(Context context) {
+        String configured = getConfiguredGatewayIp(context);
+        if (isValidIpv4(configured)) {
+            return configured;
+        }
+        String detected = DeviceMetrics.getDetectedGatewayIp(context);
+        if (isValidIpv4(detected)) {
+            return detected;
+        }
+        return configured;
+    }
+
     public static String getGatewayIpDisplay(Context context) {
-        String gw = getGatewayIp(context);
-        return gw.isEmpty() ? "Belum diisi" : gw;
+        String configured = getConfiguredGatewayIp(context);
+        if (isValidIpv4(configured)) {
+            return configured;
+        }
+        String detected = DeviceMetrics.getDetectedGatewayIp(context);
+        if (isValidIpv4(detected)) {
+            return detected + " (Auto)";
+        }
+        return "Auto-Detect (Menunggu Wi-Fi)";
+    }
+
+    /**
+     * Normalizes remote socket IP (strips IPv6-mapped IPv4 ::ffff: prefix and %scope suffix).
+     */
+    public static String normalizeRemoteIp(String remoteIp) {
+        if (remoteIp == null) return "";
+        String clean = remoteIp.trim();
+        int pct = clean.indexOf('%');
+        if (pct > 0) {
+            clean = clean.substring(0, pct);
+        }
+        String lower = clean.toLowerCase(Locale.US);
+        if (lower.startsWith("::ffff:")) {
+            clean = clean.substring(7);
+        } else if (lower.startsWith("0:0:0:0:0:ffff:")) {
+            clean = clean.substring(15);
+        }
+        return clean.trim();
+    }
+
+    /**
+     * Checks whether an IPv4/IPv6 address belongs to a private/internal/VPN network (RFC1918, CGNAT, Loopback, Link-Local).
+     */
+    public static boolean isPrivateOrInternalIp(String ip) {
+        String clean = normalizeRemoteIp(ip);
+        if (clean.isEmpty()) return false;
+        if ("127.0.0.1".equals(clean) || "::1".equals(clean) || "0:0:0:0:0:0:0:1".equals(clean)) {
+            return true;
+        }
+        String lower = clean.toLowerCase(Locale.US);
+        if (lower.startsWith("fe80:") || lower.startsWith("fc") || lower.startsWith("fd")) {
+            return true;
+        }
+        if (!isValidIpv4(clean)) {
+            return false;
+        }
+        return matchesCidr(clean, "10.0.0.0/8")
+                || matchesCidr(clean, "172.16.0.0/12")
+                || matchesCidr(clean, "192.168.0.0/16")
+                || matchesCidr(clean, "100.64.0.0/10")
+                || matchesCidr(clean, "127.0.0.0/8")
+                || matchesCidr(clean, "169.254.0.0/16");
     }
 
     /**
      * Checks whether an incoming TCP/6556 connection from remoteIp is allowed.
-     * Supports entries configured as pure IP (192.168.x.x), IP:Port (192.168.x.x:8081, :8080, :80),
-     * HTTP URL (http://192.168.x.x:8081), or CIDR (192.168.x.0/24).
+     * Behaves like Windows & Linux Checkmk agents:
+     * 1) Always allows all Private / Internal / NAT / VPN IPs (RFC1918: 192.168.x.x, 10.x.x.x,
+     *    172.16-31.x.x, CGNAT 100.64.x.x, Loopback) so MikroTik NAT, VPN, and multi-server pulls work
+     *    across all depos and branches without router reconfiguration.
+     * 2) Allows all incoming connections when Allowed Server is left empty or set to "*".
+     * 3) Also allows any additional IP/CIDR configured in Allowed Server.
      */
     public static boolean isClientAllowed(Context context, String remoteIp) {
         if (remoteIp == null || remoteIp.trim().isEmpty()) return false;
-        String cleanRemote = remoteIp.trim();
-        if ("127.0.0.1".equals(cleanRemote) || "::1".equals(cleanRemote) || "0:0:0:0:0:0:0:1".equals(cleanRemote)) {
+        String cleanRemote = normalizeRemoteIp(remoteIp);
+        if (cleanRemote.isEmpty()) return false;
+
+        // 1. Always allow internal/private networks (RFC1918, MikroTik NAT, VPN, Loopback)
+        if (isPrivateOrInternalIp(cleanRemote)) {
             return true;
         }
-        String allow = getAllowedServer(context);
-        if (allow.isEmpty()) {
-            // Block external connections until branch server IP is configured on initial PDA setup
-            return false;
-        }
-        if ("*".equals(allow)) return true;
 
+        // 2. If Allowed Server is left blank or "*", allow all connections (identical to Windows/Linux default)
+        String allow = getAllowedServer(context);
+        if (allow.isEmpty() || "*".equals(allow)) {
+            return true;
+        }
+
+        // 3. Check custom configured IPs / CIDRs
         for (String item : allow.split("[,;\\s]+")) {
             String rule = normalizeServerToken(item);
             if (rule.isEmpty()) continue;
-            if (cleanRemote.equals(rule)) return true;
+            if ("*".equals(rule) || cleanRemote.equals(rule)) return true;
             if (rule.contains("/") && matchesCidr(cleanRemote, rule)) return true;
         }
         return false;
@@ -116,10 +193,11 @@ public final class AgentConfig {
 
     /**
      * Validates the branch Checkmk Server input.
-     * Accepts IPv4 (e.g. 192.168.x.x), IPv4:Port (e.g. 192.168.x.x:8081, :80, :8080), or CIDR.
+     * Empty string is valid (defaults to Open / All Private & Internal IPs like Windows/Linux).
+     * Also accepts "*", IPv4 (e.g. 192.168.x.x), IPv4:Port (e.g. 192.168.x.x:8081, :80, :8080), or CIDR.
      */
     public static boolean isValidAllowedServerList(String raw) {
-        if (raw == null || raw.trim().isEmpty()) return false;
+        if (raw == null || raw.trim().isEmpty()) return true;
         String trimmed = raw.trim();
         if ("*".equals(trimmed)) return true;
         String[] parts = trimmed.split("[,;\\s]+");
