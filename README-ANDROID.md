@@ -9,7 +9,7 @@
 > - **Penyatuan Penuh Menu Baterai ke 1 Baris (`Health_Battery`):** Menggabungkan seluruh metrik baterai (Level, Status, Real Health, Cycles, Full Capacity, Design Spec, Temperature, Voltage, Current) menjadi **1 baris service Checkmk tunggal (`Health_Battery`)** dengan multi-perfdata (`battery_level`, `battery_health`, `battery_cycles`, `battery_temp`, `battery_voltage`, `battery_current`).
 > - **Logika Kesehatan 2946 mAh @ 100% & Perbaikan Pembacaan Siklus (`Cycles`):** Mengkalibrasi kesehatan baterai menggunakan kapasitas penuh hardware saat charge 100% di **2946 mAh** (`Design Spec : 4800 mAh`), serta memperbaiki penghitung siklus charging (`Cycles`) dengan pelacakan sesi & delta muatan kontinu (`BatteryHistory` + `BroadcastReceiver` + timer 1 menit).
 > - **Deteksi Roaming Access Point Wi-Fi (`WiFi_Status` - UniFi & Multi-AP):** Menangkap perpindahan Access Point (roaming BSSID, identifikasi vendor OUI UniFi/Ubiquiti termasuk virtual BSSID, Band 2.4GHz/5GHz & Nomor Kanal, riwayat perpindahan AP sebelumnya ke AP aktif, hitungan roam 1 jam terakhir & total, serta log permanen `wifi_roaming.log`).
-> - **Pembatasan Firewall IP Server Checkmk Cabang:** Menolak konfigurasi kosong pada port TCP/6556 dan mewajibkan pengisian manual **IP Server Checkmk Cabang** saat setting pertama kali di PDA (tanpa menampilkan IP default bawaan; mendukung input IP saja maupun `IP:Port` seperti `:80`, `:8080`, `:8081`).
+> - **Mode Koneksi TCP/6556 Bebas di Jaringan Internal / Private IP (Seperti Windows & Linux):** Port TCP/6556 kini otomatis mengizinkan seluruh koneksi dari jaringan internal/private RFC1918 (`192.168.x.x`, `10.x.x.x`, `172.16.x.x–172.31.x.x`), CGNAT/VPN (`100.64.x.x`), maupun koneksi yang terkena NAT/Masquerade MikroTik di tiap depo/cabang tanpa perlu mengubah setting MikroTik atau membatasi hanya ke 1 IP server. Kolom **IP Server Checkmk Cabang** kini bersifat opsional (jika dikosongkan, mengizinkan semua koneksi masuk).
 
 Agen monitoring Android native untuk Checkmk Community.
 
@@ -18,7 +18,7 @@ Agen monitoring Android native untuk Checkmk Community.
 - **Versi:** `1.3.7` (Stable Release)
 - **Target SDK:** Android SDK 35 (Compile), Android SDK 33 (Target), Android SDK 26 (Minimum)
 - **Lingkungan Build:** Java 17 + Gradle 8.9
-- **Transport Utama:** Checkmk PULL melalui TCP/6556 (Terproteksi Whitelist IP Server Cabang)
+- **Transport Utama:** Checkmk PULL melalui TCP/6556 (Open / Bebas di Jaringan Internal, Private IP RFC1918, VPN, & NAT MikroTik seperti agent Windows/Linux)
 - **Transport Cadangan:** HTTP/HTTPS PUSH ke receiver cache
 - **Target Armada Produksi:** Newland MT93 (`Full Capacity @ 100% = 2946 mAh`, `Design Spec = 4800 mAh`) & Android Generic
 
@@ -114,12 +114,12 @@ Memantau perpindahan Access Point (UniFi maupun AP multi-vendor lainnya) secara 
 ## 3. Pengaturan IP Server & Gateway Cabang pada PDA
 
 Saat setting pertama kali di PDA pada kartu **SETTINGS**:
-1. **IP Server Checkmk Cabang:**
-   - Diisi manual dengan IP Server Checkmk cabang yang bersangkutan.
-   - Mendukung format IP saja (`192.168.x.x`) maupun dengan port web cabang (`192.168.x.x:8081`, `:8080`, `:80`).
-2. **IP Gateway Cabang:**
-   - Diisi manual dengan alamat IP Gateway Router kantor cabang (contoh: `192.168.55.1` atau `192.168.122.1`).
-   - Tersedia tombol **AUTO-DETECT GATEWAY DARI WI-FI** untuk mendeteksi default gateway secara otomatis dari koneksi DHCP Wi-Fi yang sedang aktif.
+1. **IP Server Checkmk Cabang (Opsional):**
+   - Boleh dikosongkan (default: mengizinkan semua koneksi jaringan internal/private seperti agent Windows & Linux).
+   - Meskipun diisi IP tertentu (misal `192.168.55.112`), agen tetap otomatis mengizinkan seluruh IP Private RFC1918 (`192.168.x.x`, `10.x.x.x`, `172.16-31.x.x`) dan VPN sehingga lalu lintas yang terkena NAT MikroTik di depo/cabang tetap langsung tembus tanpa setting MikroTik.
+2. **IP Gateway Cabang (Opsional / Auto-Detect):**
+   - Jika dikosongkan, otomatis mendeteksi Default Gateway dari Wi-Fi cabang/depo yang sedang aktif.
+   - Dapat juga diisi manual (contoh: `192.168.55.1` atau `192.168.108.1`) atau melalui tombol **AUTO-DETECT GATEWAY DARI WI-FI**.
 
 ---
 
