@@ -141,7 +141,7 @@ foreach ($script in $checks) {
         Invoke-WebRequest -Uri "$baseUrl/local_checks/$script" -OutFile "$localDir\$script" -UseBasicParsing
         Write-Host "  + Unduh local_checks/$script [OK]" -ForegroundColor Gray
     } catch {
-        Write-Warning "  - Gagal menguduh $script: $_"
+        Write-Warning "  - Gagal mengunduh ${script}: $_"
     }
 }
 
