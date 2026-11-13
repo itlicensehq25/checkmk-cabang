@@ -52,16 +52,36 @@ foreach ($dir in $requiredDirs) {
     }
 }
 
-# 3. Penanganan Parameter Server (Interactive Prompt jika Kosong)
+# 3. Penanganan Parameter Server, Site ID, & Version (Interactive Prompt jika Server Kosong)
 if ([string]::IsNullOrWhitespace($Server)) {
     $Server = Read-Host "Masukkan IP Server Checkmk Cabang (contoh: 192.168.1.100 atau 192.168.1.100:8081)"
+    
+    $inputSite = Read-Host "Masukkan Site ID Checkmk [Default: $Site]"
+    if (-not [string]::IsNullOrWhitespace($inputSite)) {
+        $Site = $inputSite.Trim()
+    }
+    
+    $inputVersion = Read-Host "Masukkan Versi Checkmk Agent (contoh: 2.5.0p14-1) [Default: $Version]"
+    if (-not [string]::IsNullOrWhitespace($inputVersion)) {
+        $Version = $inputVersion.Trim()
+    }
 }
+
+# Pastikan parameter yang dimasukkan bersih dari spasi
+$Server  = $Server.Trim()
+$Site    = $Site.Trim()
+$Version = $Version.Trim()
 
 # Ekstrak IP murni untuk konfigurasi Windows Firewall
 $cleanIP = ($Server -split ':')[0].Trim()
 
+Write-Host "`n[Informasi Target Server]" -ForegroundColor Yellow
+Write-Host "  - Server IP   : $Server" -ForegroundColor Yellow
+Write-Host "  - Site ID     : $Site" -ForegroundColor Yellow
+Write-Host "  - Agent Ver   : $Version" -ForegroundColor Yellow
+
 # 4. Pengaturan Firewall (Restriksi Port TCP 6556 HANYA ke IP Server Cabang)
-Write-Host "\n[1/7] Mengonfigurasi Aturan Windows Firewall (TCP 6556)..." -ForegroundColor Cyan
+Write-Host "`n[1/7] Mengonfigurasi Aturan Windows Firewall (TCP 6556)..." -ForegroundColor Cyan
 try {
     Remove-NetFirewallRule -DisplayName "Checkmk Agent TCP 6556" -ErrorAction SilentlyContinue
     New-NetFirewallRule -DisplayName "Checkmk Agent TCP 6556" `
@@ -77,7 +97,7 @@ try {
 }
 
 # 5. Unduh & Instal MSI Agent Checkmk (jika belum terpasang)
-Write-Host "\n[2/7] Memeriksa status service Checkmk Agent..." -ForegroundColor Cyan
+Write-Host "`n[2/7] Memeriksa status service Checkmk Agent..." -ForegroundColor Cyan
 $cmkService = Get-Service -Name "CheckMkWatchdog" -ErrorAction SilentlyContinue
 if (-not $cmkService) {
     $cmkService = Get-Service -Name "CheckmkAgent" -ErrorAction SilentlyContinue
@@ -96,29 +116,29 @@ if (-not $cmkService) {
         Remove-Item $msiPath -Force -ErrorAction SilentlyContinue
         Write-Host " MSI Agent Checkmk berhasil diinstal." -ForegroundColor Green
     } catch {
-        Write-Warning " Gagal menguduh/menginstal MSI dari server ($msiUrl). Melanjutkan ke tahap berikutnya..."
+        Write-Warning " Gagal mengunduh/menginstal MSI dari server ($msiUrl). Melanjutkan ke tahap berikutnya..."
     }
 } else {
     Write-Host " Agen Checkmk sudah terpasang di sistem." -ForegroundColor Green
 }
 
 # 6. Unduh Library, Plugins, & 11 Local Checks dari GitHub
-Write-Host "\n[3/7] Mengunduh Skrip Local Checks & Library dari GitHub..." -ForegroundColor Cyan
+Write-Host "`n[3/7] Mengunduh Skrip Local Checks & Library dari GitHub..." -ForegroundColor Cyan
 $baseUrl = "https://raw.githubusercontent.com/$GithubRepo/$Branch/windows"
 
 # A. Unduh LibreHardwareMonitorLib.dll
 try {
-    Invoke-WebRequest -Uri "$baseUrl/lib/LibreHardwareMonitorLib.dll" -OutFile "$blibDir\LibreHardwareMonitorLib.dll" -UseBasicParsing
+    Invoke-WebRequest -Uri "$baseUrl/lib/LibreHardwareMonitorLib.dll" -OutFile "$libDir\LibreHardwareMonitorLib.dll" -UseBasicParsing
 } catch {
-    Write-Warning " Gagal menguduh LibreHardwareMonitorLib.dll: $_"
+    Write-Warning " Gagal mengunduh LibreHardwareMonitorLib.dll: $_"
 }
 
 # B. Unduh Plugins (mk_inventory.vbs & win_license.bat)
 try {
-    Invoke-WebRequest -Uri "$baseUrl/plugins/mk_inventory.vbs" -OutFile "$pluginsDir\nk_inventory.vbs" -UseBasicParsing
+    Invoke-WebRequest -Uri "$baseUrl/plugins/mk_inventory.vbs" -OutFile "$pluginsDir\mk_inventory.vbs" -UseBasicParsing
     Invoke-WebRequest -Uri "$baseUrl/plugins/win_license.bat" -OutFile "$pluginsDir\win_license.bat" -UseBasicParsing
 } catch {
-    Write-Warning " Gagal menguduh plugins inventaris: $_"
+    Write-Warning " Gagal mengunduh plugins inventaris: $_"
 }
 
 # C. Unduh 11 Skrip Local Checks
@@ -149,10 +169,10 @@ foreach ($script in $checks) {
 try {
     Invoke-WebRequest -Uri "$baseUrl/update_checks.ps1" -OutFile "$agentDir\update_checks.ps1" -UseBasicParsing
 } catch {
-    Write-Warning " Gagal menguduh update_checks.ps1: $_"
+    Write-Warning " Gagal mengunduh update_checks.ps1: $_"
 }
 # 7. INTEGRASI SETUP CRYSTALDISKINFO (Support Disk Format RST/OEM)
-Write-Host "\n[4/7] Mengintegrasikan CrystalDiskInfo untuk Disk Format RST/OEM..." -ForegroundColor Cyan
+Write-Host "`n[4/7] Mengintegrasikan CrystalDiskInfo untuk Disk Format RST/OEM..." -ForegroundColor Cyan
 
 # A. Deteksi Lokasi Eksekusi DiskInfo64.exe
 $cdiExePath = "C:\ProgramFiles\CrystalDiskInfo\DiskInfo64.exe"
@@ -189,7 +209,7 @@ try {
 }
 
 # 8. Penjadwalan Task Scheduler Lainnya (RAM Test & Auto-Update)
-Write-Host "\n[5/7] Mendaftarkan Scheduled Task RAM Test dan Auto-Updater..." -ForegroundColor Cyan
+Write-Host "`n[5/7] Mendaftarkan Scheduled Task RAM Test dan Auto-Updater..." -ForegroundColor Cyan
 
 # A. ScheduledTask RAM Test (Sabtu 11:00 AM)
 $ramTaskName = "Checkmk_Memory_Test"
@@ -208,7 +228,7 @@ Register-ScheduledTask -TaskName $updateTaskName -Action $updAction -Trigger $up
 Write-Host " ScheduledTask '$updateTaskName' didaftarkan (Interval: 2 jam)." -ForegroundColor Green
 
 # 9. Eksekusi Pembacaan Awal CrystalDiskInfo
-Write-Host "\n[6/7] Menjalankan pembacaan awal SMART via CrystalDiskInfo..." -ForegroundColor Cyan
+Write-Host "`n[6/7] Menjalankan pembacaan awal SMART via CrystalDiskInfo..." -ForegroundColor Cyan
 if (Test-Path $cdiExePath) {
     try {
         Start-Process -FilePath $cdiExePath -ArgumentList "/CopyExit" -Wait -WindowStyle Hidden
@@ -221,11 +241,11 @@ if (Test-Path $cdiExePath) {
 }
 
 # 10. Selesai
-Write-Host "\n[7/7] Verifikasi dan Restart Service Checkmk Agent..." -ForegroundColor Cyan
-Restart-Service -Name "ChekmkWatchdog" -ErrorAction SilentlyContinue
-Restart-Service -Name "ChekmkAgent" -ErrorAction SilentlyContinue
+Write-Host "`n[7/7] Verifikasi dan Restart Service Checkmk Agent..." -ForegroundColor Cyan
+Restart-Service -Name "CheckMkWatchdog" -ErrorAction SilentlyContinue
+Restart-Service -Name "CheckmkAgent" -ErrorAction SilentlyContinue
 
-Write-Host "\n=====================================================================" -ForegroundColor Green
+Write-Host "`n=====================================================================" -ForegroundColor Green
 Write-Host " INSTALASI SELESAI SUCCESSFUL! " -ForegroundColor Green
 Write-Host " Seluruh komponen agen Checkmk, 11 local checks, dan CrystalDiskInfo  " -ForegroundColor Green
 Write-Host " siap digunakan dalam satu kali eksekusi.                              " -ForegroundColor Green
