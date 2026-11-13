@@ -84,8 +84,8 @@ if (-not $cmkService) {
 }
 
 if (-not $cmkService) {
-    Write-Host " Agen Checkmk belum terpasang. Menguduh paket MSI dari server cabang..." -ForegroundColor Yellow
-    $msiUrl = "http://$Server/$Site/chekk_mk/agents/check-mk-agent-$Version.msi"
+    Write-Host " Agen Checkmk belum terpasang. Mengunduh paket MSI dari server cabang..." -ForegroundColor Yellow
+    $msiUrl = "http://$Server/$Site/check_mk/agents/check-mk-agent-$Version.msi"
     $msiPath = "$env:TEMP\check-mk-agent-$Version.msi"
     
     try {
@@ -103,7 +103,7 @@ if (-not $cmkService) {
 }
 
 # 6. Unduh Library, Plugins, & 11 Local Checks dari GitHub
-Write-Host "\n[3/7] Menguduh Skrip Local Checks & Library dari GitHub..." -ForegroundColor Cyan
+Write-Host "\n[3/7] Mengunduh Skrip Local Checks & Library dari GitHub..." -ForegroundColor Cyan
 $baseUrl = "https://raw.githubusercontent.com/$GithubRepo/$Branch/windows"
 
 # A. Unduh LibreHardwareMonitorLib.dll
@@ -141,7 +141,7 @@ foreach ($script in $checks) {
         Invoke-WebRequest -Uri "$baseUrl/local_checks/$script" -OutFile "$localDir\$script" -UseBasicParsing
         Write-Host "  + Unduh local_checks/$script [OK]" -ForegroundColor Gray
     } catch {
-        Write-Warning "  - Gagal menguduh $($script): $_"
+        Write-Warning "  - Gagal menguduh $script: $_"
     }
 }
 
@@ -176,14 +176,8 @@ if ($cdiApp) {
 $cdiTaskName = "Checkmk_CrystalDiskInfo"
 Unregister-ScheduledTask -TaskName $cdiTaskName -Confirm:$false -ErrorAction SilentlyContinue
 
-$cdiScriptBlock = @(
-if (Test-Path '$cdiExePath') {
-    Start-Process -FilePath '$cdiExePath' -ArgumentList '/CopyExit' -Wait -WindowStyle Hidden
-}
-"@
-
-$cdiAction    = New-ScheduledTaskAction -Execute "powershell.exe" -Argument "-ExecutionPolicy Bypass -NoProfile -Command `"$cdiScriptBlock`""
-
+$cdiCmd = "if (Test-Path '$cdiExePath') { Start-Process -FilePath '$cdiExePath' -ArgumentList '/CopyExit' -Wait -WindowStyle Hidden }"
+$cdiAction    = New-ScheduledTaskAction -Execute "powershell.exe" -Argument "-ExecutionPolicy Bypass -NoProfile -WindowStyle Hidden -Command `"$cdiCmd`""
 $cdiTrigger   = New-ScheduledTaskTrigger -Once -At (Get-Date) -RepetitionInterval (New-TimeSpan -Hours 6)
 $cdiPrincipal = New-ScheduledTaskPrincipal -UserId "NT AUTHORITY\SYSTEM" -LogonType ServiceAccount -RunLevel Highest
 
@@ -191,7 +185,7 @@ try {
     Register-ScheduledTask -TaskName $cdiTaskName -Action $cdiAction -Trigger $cdiTrigger -Principal $cdiPrincipal | Out-Null
     Write-Host " ScheduledTask '$cdiTaskName' berhasil didaftarkan (Interval: 6 jam)." -ForegroundColor Green
 } catch {
-    Write-Warning " Gagal memembagakan Scheduled Task CrystalDiskInfo: $_"
+    Write-Warning " Gagal mendaftarkan Scheduled Task CrystalDiskInfo: $_"
 }
 
 # 8. Penjadwalan Task Scheduler Lainnya (RAM Test & Auto-Update)
@@ -200,7 +194,7 @@ Write-Host "\n[5/7] Mendaftarkan Scheduled Task RAM Test dan Auto-Updater..." -F
 # A. ScheduledTask RAM Test (Sabtu 11:00 AM)
 $ramTaskName = "Checkmk_Memory_Test"
 Unregister-ScheduledTask -TaskName $ramTaskName -Confirm:$false -ErrorAction SilentlyContinue
-$ramAction  = New-ScheduledTaskAction -Execute "powershell.exe" -Argument "-ExecutionPolicy Bypass -File `"slocalDir\ram_health.ps1`""
+$ramAction  = New-ScheduledTaskAction -Execute "powershell.exe" -Argument "-ExecutionPolicy Bypass -File `"$localDir\ram_health.ps1`""
 $ramTrigger = New-ScheduledTaskTrigger -Weekly -DaysOfWeek Saturday -At 11:00AM
 Register-ScheduledTask -TaskName $ramTaskName -Action $ramAction -Trigger $ramTrigger -User "NT AUTHORITY\SYSTEM" -RunLevel Highest | Out-Null
 Write-Host " ScheduledTask '$ramTaskName' didaftarkan (Sabtu 11:00 AM)." -ForegroundColor Green
@@ -208,7 +202,7 @@ Write-Host " ScheduledTask '$ramTaskName' didaftarkan (Sabtu 11:00 AM)." -Foregr
 # B. ScheduledTask Auto-Updater (Setiap 2 Jam)
 $updateTaskName = "Checkmk_Auto_Update"
 Unregister-ScheduledTask -TaskName $updateTaskName -Confirm:$false -ErrorAction SilentlyContinue
-$updAction  = New-ScheduledTaskAction -Execute "powershell.exe" -Argument "-ExecutionPolicy Bypass -File `"sagentDir\update_checks.ps1`""
+$updAction  = New-ScheduledTaskAction -Execute "powershell.exe" -Argument "-ExecutionPolicy Bypass -File `"$agentDir\update_checks.ps1`""
 $updTrigger = New-ScheduledTaskTrigger -Once -At (Get-Date) -RepetitionInterval (New-TimeSpan -Hours 2)
 Register-ScheduledTask -TaskName $updateTaskName -Action $updAction -Trigger $updTrigger -User "NT AUTHORITY\SYSTEM" -RunLevel Highest | Out-Null
 Write-Host " ScheduledTask '$updateTaskName' didaftarkan (Interval: 2 jam)." -ForegroundColor Green
