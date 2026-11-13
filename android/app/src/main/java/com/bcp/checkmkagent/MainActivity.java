@@ -89,7 +89,18 @@ public class MainActivity extends Activity {
         setContentView(buildUi());
         loadConfig();
         requestRuntimePermissionsIfNeeded();
+        ensureServiceStartedIfAuto();
         updateDashboard();
+    }
+
+    private void ensureServiceStartedIfAuto() {
+        try {
+            if (AgentConfig.isAutoStart(this) && !AgentStats.read(this).running) {
+                Intent service = new Intent(this, CheckmkAgentService.class);
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) startForegroundService(service);
+                else startService(service);
+            }
+        } catch (Throwable ignored) {}
     }
 
     @Override
@@ -124,7 +135,7 @@ public class MainActivity extends Activity {
 
         transportSection = section("HYBRID TRANSPORT", "Pull primary + push warm backup", false);
         TextView transportHelp = bodyText();
-        transportHelp.setText("Pull TCP/6556 tetap menjadi jalur utama (dibatasi ke IP Server Checkmk Cabang). Push menjaga salinan data terbaru di receiver sebagai jalur cadangan.");
+        transportHelp.setText("Pull TCP/6556 menjadi jalur utama (Open / Bebas di jaringan internal & NAT MikroTik seperti agent Windows/Linux). Push menjaga salinan data terbaru di receiver sebagai jalur cadangan.");
         transportHelp.setTextColor(C_MUTED);
         transportSection.content.addView(transportHelp, wrap());
         root.addView(transportSection.card, matchWrapMargin(0, 0, 0, 12));
@@ -205,14 +216,14 @@ public class MainActivity extends Activity {
         portInput = input(settingsSection.content, "TCP Port", InputType.TYPE_CLASS_NUMBER, "6556");
 
         allowedServerInput = input(settingsSection.content,
-                "IP Server Checkmk Cabang",
+                "IP Server Checkmk Cabang (Opsional)",
                 InputType.TYPE_CLASS_TEXT,
-                "Masukkan IP atau IP:Port Cabang (misal :80, :8080, :8081)");
+                "Kosongkan = Bebas seperti Windows/Linux (Semua Private IP & NAT diizinkan)");
 
         gatewayIpInput = input(settingsSection.content,
                 "IP Gateway Cabang (Ping Monitor Baris ke-3)",
                 InputType.TYPE_CLASS_TEXT,
-                "Contoh: 192.168.55.1 atau 192.168.122.1");
+                "Kosongkan = Auto-Detect Gateway Wi-Fi (Contoh: 192.168.55.1)");
 
         Button detectGatewayBtn = actionButton("AUTO-DETECT GATEWAY DARI WI-FI", C_CARD_ALT, C_MUTED);
         detectGatewayBtn.setOnClickListener(v -> {
@@ -430,7 +441,7 @@ public class MainActivity extends Activity {
                 ? String.format(Locale.US, "%.0f", design) : "0");
         initialCyclesInput.setText(String.valueOf(AgentConfig.getInitialCycleCount(this)));
         allowedServerInput.setText(AgentConfig.getAllowedServer(this));
-        gatewayIpInput.setText(AgentConfig.getGatewayIp(this));
+        gatewayIpInput.setText(AgentConfig.getConfiguredGatewayIp(this));
         pushEnabledInput.setChecked(AgentConfig.isPushEnabled(this));
         pushUrlInput.setText(AgentConfig.getPushUrl(this));
         pushTokenInput.setText(AgentConfig.getPushToken(this));
@@ -457,7 +468,7 @@ public class MainActivity extends Activity {
             if (design < 0 || design > 50000) throw new IllegalArgumentException("Design capacity tidak valid");
             if (initCycles < 0 || initCycles > 10000) throw new IllegalArgumentException("Initial cycles tidak valid");
             if (!AgentConfig.isValidAllowedServerList(allowed)) {
-                throw new IllegalArgumentException("Masukkan IP Server Checkmk Cabang terlebih dahulu (bisa IP saja atau IP:Port seperti :80, :8080, :8081)");
+                throw new IllegalArgumentException("Format IP Server Checkmk tidak valid (kosongkan untuk bebas seperti Windows/Linux, atau isi IP/CIDR)");
             }
             if (!gatewayIp.isEmpty() && !AgentConfig.isValidIpv4(gatewayIp)) {
                 throw new IllegalArgumentException("Format IP Gateway Cabang tidak valid (contoh: 192.168.55.1)");
@@ -508,7 +519,7 @@ public class MainActivity extends Activity {
         styleBadge(agentBadge, stats.running ? C_GREEN : C_CRIT);
         agentText.setText(
                 "Hostname     : " + AgentConfig.getHostname(this) + "\n"
-                        + "Listen       : 0.0.0.0:" + AgentConfig.getPort(this) + " (Restricted)\n"
+                        + "Listen       : 0.0.0.0:" + AgentConfig.getPort(this) + " (Open / Private IP)\n"
                         + "Device IP    : " + localIp + "\n"
                         + "Last pull    : " + lastPull + "\n"
                         + "Last client  : " + stats.lastClient + "\n"
