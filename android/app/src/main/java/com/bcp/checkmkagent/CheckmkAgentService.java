@@ -201,8 +201,10 @@ public class CheckmkAgentService extends Service {
     }
 
     private void serveClient(Socket client) {
-        String remoteIp = client.getInetAddress() == null
+        String rawRemoteIp = client.getInetAddress() == null
                 ? "unknown" : client.getInetAddress().getHostAddress();
+        String remoteIp = AgentConfig.normalizeRemoteIp(rawRemoteIp);
+        if (remoteIp.isEmpty()) remoteIp = rawRemoteIp;
 
         if (!AgentConfig.isClientAllowed(this, remoteIp)) {
             AgentStats.recordRejected(this, remoteIp);
