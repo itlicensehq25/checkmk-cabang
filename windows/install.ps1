@@ -38,7 +38,7 @@ Write-Host "====================================================================
 Write-Host " Memulai Instalasi Checkmk Agent Windows & Integration CrystalDiskInfo " -ForegroundColor Green
 Write-Host "====================================================================" -ForegroundColor Green
 
-# 2. Persiapan Direktori Kerja Agen Chekkmk
+# 2. Persiapan Direktori Kerja Agen Checkmk
 $agentDir     = "C:\ProgramData\checkmk\agent"
 $customLogDir = "$agentDir\log_custom"
 $localDir     = "$agentDir\local"
@@ -64,7 +64,7 @@ $cleanIP = ($Server -split ':')[0].Trim()
 Write-Host "\n[1/7] Mengonfigurasi Aturan Windows Firewall (TCP 6556)..." -ForegroundColor Cyan
 try {
     Remove-NetFirewallRule -DisplayName "Checkmk Agent TCP 6556" -ErrorAction SilentlyContinue
-    New-NetFirewallRule -DisplayName "Chekkmk Agent TCP 6556" `
+    New-NetFirewallRule -DisplayName "Checkmk Agent TCP 6556" `
                        -Direction Inbound `
                        -Action Allow `
                        -Protocol TCP `
@@ -76,7 +76,7 @@ try {
     Write-Warning " Gagal mengonfigurasi Windows Firewall: $_"
 }
 
-# 5. Unduh & Instal MSI Agent Chekkmk (jika belum terpasang)
+# 5. Unduh & Instal MSI Agent Checkmk (jika belum terpasang)
 Write-Host "\n[2/7] Memeriksa status service Checkmk Agent..." -ForegroundColor Cyan
 $cmkService = Get-Service -Name "CheckMkWatchdog" -ErrorAction SilentlyContinue
 if (-not $cmkService) {
@@ -91,13 +91,13 @@ if (-not $cmkService) {
     try {
         [System.Net.ServicePointManager]::SecurityProtocol = [System.Net.SecurityProtocolType]::Tls12
         Invoke-WebRequest -Uri $msiUrl -OutFile $msiPath -UseBasicParsing
-        Write-Host " Menginstal MSI Agent Chekkmk..." -ForegroundColor Yellow
-        Start-Process msiexec.exe -ArgumentList "/i `"smsiPath`" /qn /norestart" -Wait
+        Write-Host " Menginstal MSI Agent Checkmk..." -ForegroundColor Yellow
+        Start-Process msiexec.exe -ArgumentList "/i `"$msiPath`" /qn /norestart" -Wait
         Remove-Item $msiPath -Force -ErrorAction SilentlyContinue
         Write-Host " MSI Agent Checkmk berhasil diinstal." -ForegroundColor Green
     } catch {
         Write-Warning " Gagal menguduh/menginstal MSI dari server ($msiUrl). Melanjutkan ke tahap berikutnya..."
--    }
+    }
 } else {
     Write-Host " Agen Checkmk sudah terpasang di sistem." -ForegroundColor Green
 }
@@ -141,7 +141,7 @@ foreach ($script in $checks) {
         Invoke-WebRequest -Uri "$baseUrl/local_checks/$script" -OutFile "$localDir\$script" -UseBasicParsing
         Write-Host "  + Unduh local_checks/$script [OK]" -ForegroundColor Gray
     } catch {
-        Write-Warning "  - Gagal menguduh $script: $_"
+        Write-Warning "  - Gagal menguduh $($script): $_"
     }
 }
 
@@ -164,7 +164,7 @@ if ($cdiApp) {
     Write-Host " CrystalDiskInfo tidak terdeteksi. Menginstal via winget..." -ForegroundColor Yellow
     try {
         winget install --id CrystalDewWorld.CrystalDiskInfo --exact --silent --accept-source-agreements --accept-package-agreements | Out-Null
-        Write-Host " Winget installasi CrystaqiskInfo selesai." -ForegroundColor Green
+        Write-Host " Winget installasi CrystalDiskInfo selesai." -ForegroundColor Green
     } catch {
         Write-Warning " Gagal menginstal CrystalDiskInfo via winget. Pastikan winget tersedia atau install manual."
     }
@@ -195,10 +195,10 @@ try {
 }
 
 # 8. Penjadwalan Task Scheduler Lainnya (RAM Test & Auto-Update)
-Write-Host "\n[5/7] Mendaftarkan Scheduled Task RAM Test & Auto-Updater..." -ForegroundColor Cyan
+Write-Host "\n[5/7] Mendaftarkan Scheduled Task RAM Test dan Auto-Updater..." -ForegroundColor Cyan
 
 # A. ScheduledTask RAM Test (Sabtu 11:00 AM)
-$ramTaskName = "Chekkmk_Memory_Test"
+$ramTaskName = "Checkmk_Memory_Test"
 Unregister-ScheduledTask -TaskName $ramTaskName -Confirm:$false -ErrorAction SilentlyContinue
 $ramAction  = New-ScheduledTaskAction -Execute "powershell.exe" -Argument "-ExecutionPolicy Bypass -File `"slocalDir\ram_health.ps1`""
 $ramTrigger = New-ScheduledTaskTrigger -Weekly -DaysOfWeek Saturday -At 11:00AM
@@ -206,7 +206,7 @@ Register-ScheduledTask -TaskName $ramTaskName -Action $ramAction -Trigger $ramTr
 Write-Host " ScheduledTask '$ramTaskName' didaftarkan (Sabtu 11:00 AM)." -ForegroundColor Green
 
 # B. ScheduledTask Auto-Updater (Setiap 2 Jam)
-$updateTaskName = "Chekkmk_Auto_Update"
+$updateTaskName = "Checkmk_Auto_Update"
 Unregister-ScheduledTask -TaskName $updateTaskName -Confirm:$false -ErrorAction SilentlyContinue
 $updAction  = New-ScheduledTaskAction -Execute "powershell.exe" -Argument "-ExecutionPolicy Bypass -File `"sagentDir\update_checks.ps1`""
 $updTrigger = New-ScheduledTaskTrigger -Once -At (Get-Date) -RepetitionInterval (New-TimeSpan -Hours 2)
@@ -227,12 +227,12 @@ if (Test-Path $cdiExePath) {
 }
 
 # 10. Selesai
-Write-Host "\n[7/7] Verifikasi & Restart Service Chekkmk Agent..." -ForegroundColor Cyan
+Write-Host "\n[7/7] Verifikasi dan Restart Service Checkmk Agent..." -ForegroundColor Cyan
 Restart-Service -Name "ChekmkWatchdog" -ErrorAction SilentlyContinue
 Restart-Service -Name "ChekmkAgent" -ErrorAction SilentlyContinue
 
 Write-Host "\n=====================================================================" -ForegroundColor Green
 Write-Host " INSTALASI SELESAI SUCCESSFUL! " -ForegroundColor Green
-Write-Host " Seluruh komponen agen Chekkmk, 11 local checks, dan CrystalDiskInfo  " -ForegroundColor Green
+Write-Host " Seluruh komponen agen Checkmk, 11 local checks, dan CrystalDiskInfo  " -ForegroundColor Green
 Write-Host " siap digunakan dalam satu kali eksekusi.                              " -ForegroundColor Green
 Write-Host "=====================================================================" -ForegroundColor Green
