@@ -444,5 +444,7 @@ Restart-Service -Name "CheckmkAgent" -ErrorAction SilentlyContinue
 Write-Host "`n=====================================================================" -ForegroundColor Green
 Write-Host " INSTALASI SELESAI SUCCESSFUL! " -ForegroundColor Green
 Write-Host " Seluruh komponen agen Checkmk, 11 local checks, dan CrystalDiskInfo  " -ForegroundColor Green
-Write-Host " siap digunakan dalam satu kali eksekusi.                              " -ForegroundColor Green
+Write-Host "`n=====================================================================" -ForegroundColor Green
+Write-Host "Untuk mendaftarkan sertifikat keamanan agen (mTLS) ke server Checkmk, jalankan:" -ForegroundColor Cyan
+Write-Host " & `"$ctlPath`" register --hostname <NAMA_HOST> --server ${HostOnly}:8000 --site $SiteName --user cmkadmin" -ForegroundColor Yellow
 Write-Host "=====================================================================" -ForegroundColor Green
