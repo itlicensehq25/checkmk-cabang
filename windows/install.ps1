@@ -57,44 +57,6 @@ foreach ($dir in $requiredDirs) {
     }
 }
 
-# 2b. Konfigurasi check_mk.user.yml (Menonaktifkan Matriks Bawaan, Mengaktifkan Local Checks & Plugins)
-$userYmlPath = "$agentDir\check_mk.user.yml"
-$userYmlContent = @'
-check_mk:
-  enabled: true
-  disabled_sections:
-    - services
-    - ps
-    - winperf_processor
-    - winperf_phydisk
-    - winperf_refclock
-    - df
-    - mem
-    - uptime
-    - logwatch
-    - fileinfo
-    - dotnet_clrmemory
-    - wmi_webservices
-
-winperf:
-  enabled: false
-
-plugins:
-  enabled: true
-  execution:
-    - pattern: '*.*'
-      run: true
-
-local:
-  enabled: true
-  execution:
-    - pattern: '*.*'
-      run: true
-'@
-Set-Content -Path $userYmlPath -Value $userYmlContent -Encoding UTF8 -Force
-Write-Host " Konfigurasi $userYmlPath berhasil diperbarui (Hanya Local Checks & Plugins)." -ForegroundColor Green
-
-
 # 3. Penanganan Parameter Server, Site ID, & Version (Interactive Prompt jika Server Kosong)
 if ([string]::IsNullOrWhitespace($Server)) {
     $Server = Read-Host "Masukkan IP Server & Port Checkmk Cabang (contoh: 192.168.43.188:8080)"
@@ -139,79 +101,15 @@ try {
     Write-Warning " Gagal mengonfigurasi Windows Firewall: $_"
 }
 
-# 5. Unduh & Instal MSI Agent Checkmk (jika belum terpasang atau versi terpasang < versi server)
-Write-Host "`n[2/7] Memeriksa status service dan versi Checkmk Agent..." -ForegroundColor Cyan
+# 5. Unduh & Instal MSI Agent Checkmk (jika belum terpasang)
+Write-Host "`n[2/7] Memeriksa status service Checkmk Agent..." -ForegroundColor Cyan
 $cmkService = Get-Service -Name "CheckMkWatchdog" -ErrorAction SilentlyContinue
 if (-not $cmkService) {
     $cmkService = Get-Service -Name "CheckmkAgent" -ErrorAction SilentlyContinue
 }
 
-$installedVersion = ""
-if ($cmkService) {
-    # 1. Cek versi via Windows Registry Uninstall keys
-    try {
-        $regItem = Get-ItemProperty "HKLM:\Software\Microsoft\Windows\CurrentVersion\Uninstall\*", "HKLM:\Software\Wow6432Node\Microsoft\Windows\CurrentVersion\Uninstall\*" -ErrorAction SilentlyContinue |
-            Where-Object { $_.DisplayName -like "*Checkmk*" -or $_.DisplayName -like "*Check_MK*" } | Select-Object -First 1
-        if ($regItem -and $regItem.DisplayVersion) {
-            $installedVersion = $regItem.DisplayVersion.Trim()
-        }
-    } catch {}
-
-    # 2. Fallback: Cek versi dari FileVersion / ProductVersion executable
-    if (-not $installedVersion) {
-        $agentExes = @(
-            "C:\Program Files (x86)\checkmk\service\check_mk_agent.exe",
-            "C:\Program Files\checkmk\service\check_mk_agent.exe"
-        )
-        $foundExe = $agentExes | Where-Object { Test-Path $_ } | Select-Object -First 1
-        if ($foundExe) {
-            try {
-                $ver = (Get-Item $foundExe).VersionInfo.ProductVersion
-                if (-not $ver) { $ver = (Get-Item $foundExe).VersionInfo.FileVersion }
-                if ($ver) { $installedVersion = $ver.Trim() }
-            } catch {}
-        }
-    }
-}
-
-$needInstall = $false
 if (-not $cmkService) {
-    Write-Host " Agen Checkmk belum terpasang di sistem. Memulai unduhan MSI dari server..." -ForegroundColor Yellow
-    $needInstall = $true
-} else {
-    if (-not $installedVersion) {
-        Write-Host " Agen Checkmk terpasang tetapi versi tidak terbaca. Melakukan sinkronisasi paket installer dari server..." -ForegroundColor Yellow
-        $needInstall = $true
-    } else {
-        # Bandingkan versi terpasang ($installedVersion) dengan versi target server ($Version)
-        $cleanTgt  = $Version -replace '-.*$', ''
-        $cleanInst = $installedVersion -replace '-.*$', ''
-        
-        try {
-            $vInstNorm = [version]($cleanInst -replace 'p', '.')
-            $vTgtNorm  = [version]($cleanTgt -replace 'p', '.')
-
-            if ($vInstNorm -lt $vTgtNorm) {
-                Write-Host " Versi agen terpasang ($installedVersion) lebih rendah dari versi server ($Version). Memulai upgrade..." -ForegroundColor Yellow
-                $needInstall = $true
-            } else {
-                Write-Host " Agen Checkmk terpasang ($installedVersion) sudah sesuai / lebih baru dari server ($Version). Skip instalasi MSI." -ForegroundColor Green
-                $needInstall = $false
-            }
-        } catch {
-            if ($cleanInst -ne $cleanTgt) {
-                Write-Host " Versi agen terpasang ($installedVersion) berbeda dengan server ($Version). Memulai instalasi/upgrade..." -ForegroundColor Yellow
-                $needInstall = $true
-            } else {
-                Write-Host " Agen Checkmk terpasang ($installedVersion) sudah sesuai dengan server ($Version). Skip instalasi MSI." -ForegroundColor Green
-                $needInstall = $false
-            }
-        }
-    }
-}
-
-if ($needInstall) {
-    Write-Host " Mengunduh paket MSI dari server cabang..." -ForegroundColor Yellow
+    Write-Host " Agen Checkmk belum terpasang. Mengunduh paket MSI dari server cabang..." -ForegroundColor Yellow
     
     # Bypass SSL validation untuk self-signed certificate & atur protokol TLS
     try {
@@ -268,7 +166,7 @@ if ($needInstall) {
             Write-Host " Menginstal MSI Agent Checkmk..." -ForegroundColor Yellow
             $proc = Start-Process msiexec.exe -ArgumentList "/i `"$msiPath`" /qn /norestart" -Wait -PassThru
             if ($proc.ExitCode -eq 0 -or $proc.ExitCode -eq 3010) {
-                Write-Host " MSI Agent Checkmk berhasil diinstal/diupgrade." -ForegroundColor Green
+                Write-Host " MSI Agent Checkmk berhasil diinstal." -ForegroundColor Green
             } else {
                 Write-Warning " Instalasi msiexec selesai dengan exit code: $($proc.ExitCode)"
             }
@@ -284,6 +182,8 @@ if ($needInstall) {
         Write-Warning "  3. Jika installer MSI dipasang secara manual, jalankan kembali skrip ini untuk mengonfigurasi local checks & scheduler."
         Write-Warning " Melanjutkan ke tahap berikutnya..."
     }
+} else {
+    Write-Host " Agen Checkmk sudah terpasang di sistem." -ForegroundColor Green
 }
 
 # 6. Unduh Library, Plugins, & 11 Local Checks dari GitHub
@@ -444,7 +344,5 @@ Restart-Service -Name "CheckmkAgent" -ErrorAction SilentlyContinue
 Write-Host "`n=====================================================================" -ForegroundColor Green
 Write-Host " INSTALASI SELESAI SUCCESSFUL! " -ForegroundColor Green
 Write-Host " Seluruh komponen agen Checkmk, 11 local checks, dan CrystalDiskInfo  " -ForegroundColor Green
-Write-Host "`n=====================================================================" -ForegroundColor Green
-Write-Host "Untuk mendaftarkan sertifikat keamanan agen (mTLS) ke server Checkmk, jalankan:" -ForegroundColor Cyan
-Write-Host " & `"$ctlPath`" register --hostname <NAMA_HOST> --server ${HostOnly}:8000 --site $SiteName --user cmkadmin" -ForegroundColor Yellow
+Write-Host " siap digunakan dalam satu kali eksekusi.                              " -ForegroundColor Green
 Write-Host "=====================================================================" -ForegroundColor Green
