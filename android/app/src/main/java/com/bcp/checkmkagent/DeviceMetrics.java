@@ -472,9 +472,14 @@ public class DeviceMetrics {
             }
 
             long ramMb = Math.round(rs.ramTotalGb * 1024.0);
+            String safeMfg = (Build.MANUFACTURER == null ? "Android" : Build.MANUFACTURER).replace(":", "-");
+            String safeModel = (Build.MODEL == null ? "Device" : Build.MODEL).replace(":", "-");
+            String safeSerial = (cfg.getHostname() == null ? "unknown" : cfg.getHostname()).replace(":", "-");
             String dmi = String.format(Locale.US,
-                    "System Information\n\tManufacturer: %s\n\tProduct Name: %s\n\tSerial Number: %s\nMemory Device\n\tSize: %d MB",
-                    Build.MANUFACTURER, Build.MODEL, cfg.getHostname(), ramMb);
+                    "System Information\n:Manufacturer: %s\n:Product Name: %s\n:Serial Number: %s\n"
+                            + "Physical Memory Array\n:Location: System Board Or Motherboard\n:Use: System Memory\n:Number Of Devices: 1\n"
+                            + "Memory Device\n:Size: %d MB\n:Locator: Internal RAM\n:Type: RAM",
+                    safeMfg, safeModel, safeSerial, ramMb);
             addRaw(arr, "<<<dmidecode:sep(58)>>>", dmi);
 
             long diskBytes = Math.round(rs.storageTotalGb * 1024.0 * 1024.0 * 1024.0);
