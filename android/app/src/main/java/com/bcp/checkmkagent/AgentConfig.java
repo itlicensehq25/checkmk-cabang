@@ -2,387 +2,219 @@ package com.bcp.checkmkagent;
 
 import android.content.Context;
 import android.content.SharedPreferences;
+import android.net.ConnectivityManager;
+import android.net.DhcpInfo;
+import android.net.LinkProperties;
+import android.net.Network;
+import android.net.RouteInfo;
+import android.net.wifi.WifiManager;
 import android.os.Build;
+import android.provider.Settings;
 
+import org.json.JSONObject;
+
+import java.net.Inet4Address;
+import java.net.InetAddress;
 import java.util.Locale;
 
-public final class AgentConfig {
-    public static final String PREFS = "cmkagent_prefs";
+public class AgentConfig {
+    private static final String PREF_NAME = "cmkagent_rust_prefs";
 
     private static final String KEY_HOSTNAME = "hostname";
     private static final String KEY_PORT = "port";
-    private static final String KEY_DESIGN_CAPACITY = "design_capacity_mah";
-    private static final String KEY_INITIAL_CYCLES = "initial_cycle_count";
-    private static final String KEY_AUTOSTART = "autostart";
-    private static final String KEY_ALLOWED_SERVER = "allowed_server";
-    private static final String KEY_GATEWAY_IP = "gateway_ip";
+    private static final String KEY_ALLOWED = "allowed_servers";
+    private static final String KEY_ALLOW_PRIVATE = "allow_all_private";
+    private static final String KEY_GATEWAY = "gateway_ip";
+    private static final String KEY_LAST_DETECTED_GATEWAY = "last_detected_gateway_ip";
+    private static final String KEY_DESIGN_MAH = "battery_design_mah";
+    private static final String KEY_INITIAL_CYCLES = "initial_battery_cycles";
     private static final String KEY_PUSH_ENABLED = "push_enabled";
     private static final String KEY_PUSH_URL = "push_url";
     private static final String KEY_PUSH_TOKEN = "push_token";
-    private static final String KEY_PUSH_INTERVAL_SEC = "push_interval_sec";
+    private static final String KEY_PUSH_INTERVAL = "push_interval_sec";
 
-    private AgentConfig() {}
+    private final Context appCtx;
+    private final SharedPreferences prefs;
 
-    public static String getHostname(Context context) {
-        SharedPreferences p = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE);
-        String fallback = sanitizeHostname("PDA-" + Build.MODEL);
-        String value = p.getString(KEY_HOSTNAME, fallback);
-        if (value == null || value.trim().isEmpty()) return fallback;
-        return sanitizeHostname(value.trim());
+    public AgentConfig(Context ctx) {
+        this.appCtx = ctx.getApplicationContext();
+        this.prefs = appCtx.getSharedPreferences(PREF_NAME, Context.MODE_PRIVATE);
     }
 
-    public static int getPort(Context context) {
-        SharedPreferences p = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE);
-        int port = p.getInt(KEY_PORT, 6556);
-        return (port >= 1 && port <= 65535) ? port : 6556;
+    public static String sanitizeHostname(String raw) {
+        if (raw == null) return "ANDROID-PDA";
+        String clean = raw.trim().replaceAll("[^a-zA-Z0-9._-]", "");
+        return clean.isEmpty() ? "ANDROID-PDA" : clean;
     }
 
-    public static double getDesignCapacityMah(Context context) {
-        SharedPreferences p = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE);
-        long bits = p.getLong(KEY_DESIGN_CAPACITY, Double.doubleToRawLongBits(0.0));
-        double value = Double.longBitsToDouble(bits);
-        return value > 0 ? value : 0.0;
+    public String getDefaultHostname() {
+        try {
+            String btName = Settings.Global.getString(appCtx.getContentResolver(), "device_name");
+            if (btName != null && !btName.trim().isEmpty()) {
+                return sanitizeHostname(btName).toUpperCase(Locale.US);
+            }
+        } catch (Throwable ignored) {}
+        String model = (Build.MODEL == null ? "ANDROID" : Build.MODEL).replaceAll("\\s+", "-");
+        return sanitizeHostname(model).toUpperCase(Locale.US);
     }
 
-    public static int getInitialCycleCount(Context context) {
-        SharedPreferences p = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE);
-        int val = p.getInt(KEY_INITIAL_CYCLES, 0);
-        return Math.max(0, val);
-    }
-
-    public static boolean isAutoStart(Context context) {
-        return context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
-                .getBoolean(KEY_AUTOSTART, true);
-    }
-
-    /**
-     * Returns the configured Checkmk Branch Server IP (or IP:Port) entered manually during initial setup.
-     * Empty string ("") if not configured yet (no hardcoded default IPs shown).
-     */
-    public static String getAllowedServer(Context context) {
-        String value = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
-                .getString(KEY_ALLOWED_SERVER, "");
-        if (value == null || value.trim().isEmpty()) {
-            return "";
+    public String getHostname() {
+        String stored = prefs.getString(KEY_HOSTNAME, "");
+        if (stored == null || stored.trim().isEmpty()) {
+            return getDefaultHostname();
         }
-        return value.trim();
+        return sanitizeHostname(stored);
     }
 
-    public static String getAllowedServerDisplay(Context context) {
-        String allow = getAllowedServer(context);
-        if (allow.isEmpty() || "*".equals(allow)) {
-            return "All Private / Internal IP (Open)";
-        }
-        return allow + " (+ All Private/NAT)";
+    public int getPort() {
+        return prefs.getInt(KEY_PORT, 6556);
     }
 
-    /**
-     * Returns the raw Gateway IP saved manually in Settings ("" if left blank for Auto-Detect).
-     */
-    public static String getConfiguredGatewayIp(Context context) {
-        String value = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
-                .getString(KEY_GATEWAY_IP, "");
-        return value == null ? "" : value.trim();
+    public String getAllowedServersRaw() {
+        return prefs.getString(KEY_ALLOWED, "");
     }
 
-    /**
-     * Returns the configured Branch Gateway IP entered manually during setup on the PDA,
-     * or automatically detects the active Wi-Fi default gateway if left empty (like Windows/Linux).
-     */
-    public static String getGatewayIp(Context context) {
-        String configured = getConfiguredGatewayIp(context);
-        if (isValidIpv4(configured)) {
-            return configured;
-        }
-        String detected = DeviceMetrics.getDetectedGatewayIp(context);
-        if (isValidIpv4(detected)) {
+    public boolean isAllowAllPrivate() {
+        return prefs.getBoolean(KEY_ALLOW_PRIVATE, true);
+    }
+
+    public String getConfiguredGatewayIp() {
+        return prefs.getString(KEY_GATEWAY, "");
+    }
+
+    public String getGatewayIp() {
+        String cfg = getConfiguredGatewayIp().trim();
+        if (!cfg.isEmpty()) return cfg;
+        String detected = detectWifiGateway(appCtx);
+        if (!detected.isEmpty()) {
+            if (!detected.equals(prefs.getString(KEY_LAST_DETECTED_GATEWAY, ""))) {
+                prefs.edit().putString(KEY_LAST_DETECTED_GATEWAY, detected).apply();
+            }
             return detected;
         }
-        return configured;
+        return prefs.getString(KEY_LAST_DETECTED_GATEWAY, "");
     }
 
-    public static String getGatewayIpDisplay(Context context) {
-        String configured = getConfiguredGatewayIp(context);
-        if (isValidIpv4(configured)) {
-            return configured;
-        }
-        String detected = DeviceMetrics.getDetectedGatewayIp(context);
-        if (isValidIpv4(detected)) {
-            return detected + " (Auto)";
-        }
-        return "Auto-Detect (Menunggu Wi-Fi)";
-    }
-
-    /**
-     * Normalizes remote socket IP (strips IPv6-mapped IPv4 ::ffff: prefix and %scope suffix).
-     */
-    public static String normalizeRemoteIp(String remoteIp) {
-        if (remoteIp == null) return "";
-        String clean = remoteIp.trim();
-        int pct = clean.indexOf('%');
-        if (pct > 0) {
-            clean = clean.substring(0, pct);
-        }
-        String lower = clean.toLowerCase(Locale.US);
-        if (lower.startsWith("::ffff:")) {
-            clean = clean.substring(7);
-        } else if (lower.startsWith("0:0:0:0:0:ffff:")) {
-            clean = clean.substring(15);
-        }
-        return clean.trim();
-    }
-
-    /**
-     * Checks whether an IPv4/IPv6 address belongs to a private/internal/VPN network (RFC1918, CGNAT, Loopback, Link-Local).
-     */
-    public static boolean isPrivateOrInternalIp(String ip) {
-        String clean = normalizeRemoteIp(ip);
-        if (clean.isEmpty()) return false;
-        if ("127.0.0.1".equals(clean) || "::1".equals(clean) || "0:0:0:0:0:0:0:1".equals(clean)) {
-            return true;
-        }
-        String lower = clean.toLowerCase(Locale.US);
-        if (lower.startsWith("fe80:") || lower.startsWith("fc") || lower.startsWith("fd")) {
-            return true;
-        }
-        if (!isValidIpv4(clean)) {
-            return false;
-        }
-        return matchesCidr(clean, "10.0.0.0/8")
-                || matchesCidr(clean, "172.16.0.0/12")
-                || matchesCidr(clean, "192.168.0.0/16")
-                || matchesCidr(clean, "100.64.0.0/10")
-                || matchesCidr(clean, "127.0.0.0/8")
-                || matchesCidr(clean, "169.254.0.0/16");
-    }
-
-    /**
-     * Checks whether an incoming TCP/6556 connection from remoteIp is allowed.
-     * Behaves like Windows & Linux Checkmk agents:
-     * 1) Always allows all Private / Internal / NAT / VPN IPs (RFC1918: 192.168.x.x, 10.x.x.x,
-     *    172.16-31.x.x, CGNAT 100.64.x.x, Loopback) so MikroTik NAT, VPN, and multi-server pulls work
-     *    across all depos and branches without router reconfiguration.
-     * 2) Allows all incoming connections when Allowed Server is left empty or set to "*".
-     * 3) Also allows any additional IP/CIDR configured in Allowed Server.
-     */
-    public static boolean isClientAllowed(Context context, String remoteIp) {
-        if (remoteIp == null || remoteIp.trim().isEmpty()) return false;
-        String cleanRemote = normalizeRemoteIp(remoteIp);
-        if (cleanRemote.isEmpty()) return false;
-
-        // 1. Always allow internal/private networks (RFC1918, MikroTik NAT, VPN, Loopback)
-        if (isPrivateOrInternalIp(cleanRemote)) {
-            return true;
-        }
-
-        // 2. If Allowed Server is left blank or "*", allow all connections (identical to Windows/Linux default)
-        String allow = getAllowedServer(context);
-        if (allow.isEmpty() || "*".equals(allow)) {
-            return true;
-        }
-
-        // 3. Check custom configured IPs / CIDRs
-        for (String item : allow.split("[,;\\s]+")) {
-            String rule = normalizeServerToken(item);
-            if (rule.isEmpty()) continue;
-            if ("*".equals(rule) || cleanRemote.equals(rule)) return true;
-            if (rule.contains("/") && matchesCidr(cleanRemote, rule)) return true;
-        }
-        return false;
-    }
-
-    /**
-     * Validates the branch Checkmk Server input.
-     * Empty string is valid (defaults to Open / All Private & Internal IPs like Windows/Linux).
-     * Also accepts "*", IPv4 (e.g. 192.168.x.x), IPv4:Port (e.g. 192.168.x.x:8081, :80, :8080), or CIDR.
-     */
-    public static boolean isValidAllowedServerList(String raw) {
-        if (raw == null || raw.trim().isEmpty()) return true;
-        String trimmed = raw.trim();
-        if ("*".equals(trimmed)) return true;
-        String[] parts = trimmed.split("[,;\\s]+");
-        int validCount = 0;
-        for (String part : parts) {
-            String item = part.trim();
-            if (item.isEmpty()) continue;
-            if (!isValidServerToken(item)) return false;
-            validCount++;
-        }
-        return validCount > 0;
-    }
-
-    /**
-     * Strips optional http(s):// prefix, path suffix, and optional :port (e.g. :8081, :8080, :80)
-     * so that TCP/6556 source IP matching works whether the user entered IP or IP:Port.
-     */
-    public static String normalizeServerToken(String rawToken) {
-        if (rawToken == null) return "";
-        String t = rawToken.trim();
-        if (t.startsWith("http://")) t = t.substring(7);
-        else if (t.startsWith("https://")) t = t.substring(8);
-
-        // Keep CIDR if present, otherwise strip path
-        if (!t.contains("/")) {
-            int slash = t.indexOf('/');
-            if (slash >= 0) t = t.substring(0, slash);
-        } else {
-            // Check if slash is CIDR (/0..32) or URL path
-            int slash = t.indexOf('/');
-            String afterSlash = t.substring(slash + 1);
-            if (!afterSlash.matches("\\d{1,2}")) {
-                t = t.substring(0, slash);
-            }
-        }
-
-        // Strip :port (e.g. 192.168.55.112:8081 -> 192.168.55.112)
-        int colon = t.indexOf(':');
-        if (colon > 0) {
-            t = t.substring(0, colon);
-        }
-        return t.trim();
-    }
-
-    private static boolean isValidServerToken(String rawToken) {
-        String t = rawToken.trim();
-        if (t.startsWith("http://")) t = t.substring(7);
-        else if (t.startsWith("https://")) t = t.substring(8);
-
-        // Optional :port validation (e.g. :80, :8080, :8081)
-        if (t.contains(":") && !t.contains("/")) {
-            String[] hostPort = t.split(":");
-            if (hostPort.length != 2) return false;
-            try {
-                int port = Integer.parseInt(hostPort[1]);
-                if (port < 1 || port > 65535) return false;
-            } catch (NumberFormatException e) {
-                return false;
-            }
-            t = hostPort[0];
-        }
-
-        return isValidIpv4OrCidr(t);
-    }
-
-    public static boolean isValidIpv4(String token) {
-        if (token == null || token.trim().isEmpty()) return false;
-        String[] octets = token.trim().split("\\.");
-        if (octets.length != 4) return false;
-        for (String o : octets) {
-            try {
-                int v = Integer.parseInt(o);
-                if (v < 0 || v > 255) return false;
-            } catch (NumberFormatException e) {
-                return false;
-            }
-        }
-        return true;
-    }
-
-    private static boolean isValidIpv4OrCidr(String token) {
-        String ipPart = token;
-        if (token.contains("/")) {
-            String[] split = token.split("/");
-            if (split.length != 2) return false;
-            ipPart = split[0];
-            try {
-                int prefix = Integer.parseInt(split[1]);
-                if (prefix < 0 || prefix > 32) return false;
-            } catch (NumberFormatException e) {
-                return false;
-            }
-        }
-        String[] octets = ipPart.split("\\.");
-        if (octets.length != 4) return false;
-        for (String o : octets) {
-            try {
-                int v = Integer.parseInt(o);
-                if (v < 0 || v > 255) return false;
-            } catch (NumberFormatException e) {
-                return false;
-            }
-        }
-        return true;
-    }
-
-    private static boolean matchesCidr(String ip, String cidr) {
+    public static String detectWifiGateway(Context ctx) {
         try {
-            String[] parts = cidr.split("/");
-            int prefix = Integer.parseInt(parts[1]);
-            int ipInt = ipv4ToInt(ip);
-            int netInt = ipv4ToInt(parts[0]);
-            int mask = prefix == 0 ? 0 : (0xFFFFFFFF << (32 - prefix));
-            return (ipInt & mask) == (netInt & mask);
-        } catch (Throwable ignored) {
-            return false;
-        }
+            ConnectivityManager cm = (ConnectivityManager) ctx.getSystemService(Context.CONNECTIVITY_SERVICE);
+            if (cm != null) {
+                Network net = cm.getActiveNetwork();
+                LinkProperties lp = net != null ? cm.getLinkProperties(net) : null;
+                if (lp != null) {
+                    for (RouteInfo ri : lp.getRoutes()) {
+                        if (ri.isDefaultRoute() && ri.getGateway() instanceof Inet4Address) {
+                            String gw = ri.getGateway().getHostAddress();
+                            if (gw != null && !"0.0.0.0".equals(gw)) return gw;
+                        }
+                    }
+                }
+            }
+        } catch (Throwable ignored) {}
+
+        try {
+            WifiManager wm = (WifiManager) ctx.getApplicationContext().getSystemService(Context.WIFI_SERVICE);
+            if (wm != null) {
+                DhcpInfo dhcp = wm.getDhcpInfo();
+                if (dhcp != null && dhcp.gateway != 0) {
+                    int ip = dhcp.gateway;
+                    return String.format(Locale.US, "%d.%d.%d.%d",
+                            (ip & 0xff), (ip >> 8 & 0xff), (ip >> 16 & 0xff), (ip >> 24 & 0xff));
+                }
+            }
+        } catch (Throwable ignored) {}
+        return "";
     }
 
-    private static int ipv4ToInt(String ip) {
-        String[] octets = ip.split("\\.");
-        return ((Integer.parseInt(octets[0]) & 0xFF) << 24)
-                | ((Integer.parseInt(octets[1]) & 0xFF) << 16)
-                | ((Integer.parseInt(octets[2]) & 0xFF) << 8)
-                | (Integer.parseInt(octets[3]) & 0xFF);
+    public static String getDeviceIpv4(Context ctx) {
+        try {
+            ConnectivityManager cm = (ConnectivityManager) ctx.getSystemService(Context.CONNECTIVITY_SERVICE);
+            if (cm != null) {
+                Network net = cm.getActiveNetwork();
+                LinkProperties lp = net != null ? cm.getLinkProperties(net) : null;
+                if (lp != null) {
+                    for (android.net.LinkAddress la : lp.getLinkAddresses()) {
+                        InetAddress addr = la.getAddress();
+                        if (addr instanceof Inet4Address && !addr.isLoopbackAddress()) {
+                            return addr.getHostAddress();
+                        }
+                    }
+                }
+            }
+        } catch (Throwable ignored) {}
+        return "0.0.0.0";
     }
 
-    public static boolean isPushEnabled(Context context) {
-        return context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
-                .getBoolean(KEY_PUSH_ENABLED, true);
+    public int getBatteryDesignMahOverride() {
+        return prefs.getInt(KEY_DESIGN_MAH, 0);
     }
 
-    public static String getPushUrl(Context context) {
-        String value = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
-                .getString(KEY_PUSH_URL, "");
-        return value == null ? "" : value.trim();
+    public int getInitialBatteryCycles() {
+        return prefs.getInt(KEY_INITIAL_CYCLES, 0);
     }
 
-    public static String getPushToken(Context context) {
-        String value = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
-                .getString(KEY_PUSH_TOKEN, "");
-        return value == null ? "" : value.trim();
+    public boolean isPushEnabled() {
+        return prefs.getBoolean(KEY_PUSH_ENABLED, false);
     }
 
-    public static int getPushIntervalSec(Context context) {
-        int value = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
-                .getInt(KEY_PUSH_INTERVAL_SEC, 300);
-        if (value < 60) return 60;
-        if (value > 86400) return 86400;
-        return value;
+    public String getPushUrl() {
+        return prefs.getString(KEY_PUSH_URL, "");
     }
 
-    public static boolean isPushConfigured(Context context) {
-        return isPushEnabled(context) && !getPushUrl(context).isEmpty();
+    public String getPushToken() {
+        return prefs.getString(KEY_PUSH_TOKEN, "");
     }
 
-    public static void save(Context context, String hostname, int port,
-                            double designCapacityMah, int initialCycles, boolean autoStart,
-                            String allowedServer, String gatewayIp, boolean pushEnabled,
-                            String pushUrl, String pushToken, int pushIntervalSec) {
-        String cleanAllowed = allowedServer == null ? "" : allowedServer.trim();
-        String cleanGateway = gatewayIp == null ? "" : gatewayIp.trim();
-        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
-                .edit()
+    public int getPushIntervalSec() {
+        return Math.max(60, prefs.getInt(KEY_PUSH_INTERVAL, 300));
+    }
+
+    public void save(
+            String hostname,
+            int port,
+            String allowedServers,
+            boolean allowAllPrivate,
+            String gatewayIp,
+            int designMah,
+            int initialCycles,
+            boolean pushEnabled,
+            String pushUrl,
+            String pushToken,
+            int pushIntervalSec
+    ) {
+        prefs.edit()
                 .putString(KEY_HOSTNAME, sanitizeHostname(hostname))
-                .putInt(KEY_PORT, port)
-                .putLong(KEY_DESIGN_CAPACITY,
-                        Double.doubleToRawLongBits(Math.max(0.0, designCapacityMah)))
+                .putInt(KEY_PORT, port > 0 && port <= 65535 ? port : 6556)
+                .putString(KEY_ALLOWED, allowedServers == null ? "" : allowedServers.trim())
+                .putBoolean(KEY_ALLOW_PRIVATE, allowAllPrivate)
+                .putString(KEY_GATEWAY, gatewayIp == null ? "" : gatewayIp.trim())
+                .putInt(KEY_DESIGN_MAH, Math.max(0, designMah))
                 .putInt(KEY_INITIAL_CYCLES, Math.max(0, initialCycles))
-                .putBoolean(KEY_AUTOSTART, autoStart)
-                .putString(KEY_ALLOWED_SERVER, cleanAllowed)
-                .putString(KEY_GATEWAY_IP, cleanGateway)
                 .putBoolean(KEY_PUSH_ENABLED, pushEnabled)
                 .putString(KEY_PUSH_URL, pushUrl == null ? "" : pushUrl.trim())
                 .putString(KEY_PUSH_TOKEN, pushToken == null ? "" : pushToken.trim())
-                .putInt(KEY_PUSH_INTERVAL_SEC, Math.max(60, Math.min(86400, pushIntervalSec)))
+                .putInt(KEY_PUSH_INTERVAL, Math.max(60, pushIntervalSec))
                 .apply();
     }
 
-    public static String sanitizeHostname(String value) {
-        if (value == null) return "ANDROID-PDA";
-        String cleaned = value.trim().toUpperCase(Locale.US)
-                .replaceAll("[^A-Z0-9._-]", "-")
-                .replaceAll("-+", "-");
-        if (cleaned.isEmpty()) return "ANDROID-PDA";
-        return cleaned.length() > 63 ? cleaned.substring(0, 63) : cleaned;
+    public String toNativeConfigJson() {
+        JSONObject o = new JSONObject();
+        try {
+            o.put("hostname", getHostname());
+            o.put("port", getPort());
+            o.put("reported_version", "Agen BMS : 1.3.8");
+            o.put("allowed_servers", getAllowedServersRaw());
+            o.put("allow_all_private", isAllowAllPrivate());
+            o.put("gateway_ip", getGatewayIp());
+            o.put("push_enabled", isPushEnabled());
+            o.put("push_url", getPushUrl());
+            o.put("push_token", getPushToken());
+            o.put("push_interval_sec", getPushIntervalSec());
+            o.put("ping_enabled", true);
+            o.put("local_ping_target", "192.168.122.10");
+            o.put("internet_ping_target", "8.8.8.8");
+            o.put("hw_sw_inventory", true);
+        } catch (Throwable ignored) {}
+        return o.toString();
     }
 }

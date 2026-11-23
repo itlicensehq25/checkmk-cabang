@@ -1,5 +1,6 @@
 package com.bcp.checkmkagent;
 
+import android.Manifest;
 import android.app.ActivityManager;
 import android.content.Context;
 import android.content.Intent;
@@ -7,13 +8,13 @@ import android.content.IntentFilter;
 import android.content.pm.ApplicationInfo;
 import android.content.pm.PackageInfo;
 import android.content.pm.PackageManager;
+import android.location.LocationManager;
 import android.net.ConnectivityManager;
-import android.net.LinkAddress;
-import android.net.LinkProperties;
 import android.net.Network;
 import android.net.NetworkCapabilities;
-import android.net.RouteInfo;
+import android.net.TransportInfo;
 import android.net.wifi.ScanResult;
+import android.net.wifi.SupplicantState;
 import android.net.wifi.WifiInfo;
 import android.net.wifi.WifiManager;
 import android.os.BatteryManager;
@@ -22,816 +23,512 @@ import android.os.Environment;
 import android.os.StatFs;
 import android.os.SystemClock;
 
+import org.json.JSONArray;
+import org.json.JSONObject;
+
 import java.io.BufferedReader;
-import java.io.File;
 import java.io.FileReader;
-import java.lang.reflect.Constructor;
-import java.lang.reflect.Method;
-import java.net.Inet4Address;
-import java.net.NetworkInterface;
-import java.util.Collections;
 import java.util.List;
 import java.util.Locale;
 
-public final class DeviceMetrics {
-
-    public static final double MT93_FULL_CAPACITY_MAH = 2946.0;
-    public static final double MT93_DESIGN_CAPACITY_MAH = 4800.0;
-
-    private DeviceMetrics() {}
-
-    public static final class BatteryInfo {
-        public int level = -1;
-        public boolean plugged = false;
-        public double temperatureC = Double.NaN;
-        public double voltageV = Double.NaN;
-        public String status = "Unknown";
-        public String healthStatus = "Good";
-        public double chargeCounterMah = Double.NaN;
-        public double currentNowMa = Double.NaN;
-        public double currentAverageMa = Double.NaN;
-        public double designCapacityMah = Double.NaN;
-        public String designCapacitySource = "Unavailable";
-        public double fullCapacityMah = Double.NaN;
-        public double fullChargeVoltageV = Double.NaN;
-        public String fullCapacitySource = "Unavailable";
-        public boolean fullCapacityEstimated = false;
-        public double healthPercent = 100.0;
-        public int estimateSamples = 0;
-        public int cycleCount = 0;
-        public int chargeSessions = 0;
-        public double totalChargedMah = 0.0;
+public class DeviceMetrics {
+    public static class BatterySnapshot {
+        public int levelPct;
+        public String statusText;
+        public double tempC;
+        public double voltageV;
+        public int currentMa;
+        public double designMah;
+        public double estFullMah;
+        public double healthPct;
+        public int cycles;
+        public String calcMethod;
     }
 
-    public static final class UsageInfo {
-        public double totalGb;
-        public double freeGb;
-        public double usedGb;
-        public double usedPercent;
+    public static class RamStorageSnapshot {
+        public int ramPct;
+        public double ramUsedGb;
+        public double ramFreeGb;
+        public double ramTotalGb;
+        public int storagePct;
+        public double storageUsedGb;
+        public double storageFreeGb;
+        public double storageTotalGb;
     }
 
-    public static final class WifiStatus {
-        public boolean connected;
-        public String ssid = "Not Connected";
-        public String bssid = "N/A";
-        public String apVendor = "AP";
-        public String bandChannel = "N/A";
-        public String ip = "N/A";
-        public int rssi = Integer.MIN_VALUE;
-        public int linkSpeedMbps = -1;
-        public int frequencyMhz = -1;
-        public int roamsLastHour = 0;
-        public int totalRoams = 0;
-        public String previousBssid = "-";
-        public String lastRoamReason = "-";
-        public String roamSummary = "Stable on AP (0x/1h)";
-        public String detectionSource = "Unavailable";
-        public String detailsSource = "Unavailable";
+    public static class WifiSnapshot {
+        public String status;
+        public String ssid;
+        public String bssid;
+        public String vendor;
+        public String bandChannel;
+        public int rssiDbm;
+        public int linkSpeedMbps;
+        public String ip;
+        public int roam1h;
+        public int roamTotal;
+        public String lastRoam;
     }
 
-    public static final class DeviceInfo {
-        public String manufacturer;
-        public String model;
-        public String androidVersion;
-        public int sdk;
-        public long uptimeMs;
-        public String profile;
-        public String hardwareSoc;
-        public String board;
-        public String kernelVersion;
-        public String arch;
+    public static class AppCountSnapshot {
+        public int totalApps;
+        public int userApps;
+        public int systemApps;
     }
 
-    public static final class AppInventoryInfo {
-        public int totalApps = 0;
-        public int userApps = 0;
-        public int systemApps = 0;
-        public String fullInventoryPayload = "";
-    }
+    private static AppCountSnapshot cachedAppCounts = null;
+    private static long lastAppCountMillis = 0L;
 
-    public static AppInventoryInfo readAppInventory(Context context) {
-        AppInventoryInfo info = new AppInventoryInfo();
-        if (context == null) return info;
-
-        StringBuilder sb = new StringBuilder();
-        DeviceInfo dev = readDeviceInfo();
-        UsageInfo ram = readRam(context);
-        UsageInfo storage = readStorage();
-
-        // 1. HARDWARE: SYSTEM & MEMORY (RAM)
-        long ramTotalMb = Math.round(ram.totalGb * 1024.0);
-        sb.append("<<<dmidecode:sep(58)>>>\n");
-        sb.append("System Information\n");
-        sb.append(":Manufacturer: ").append(dev.manufacturer).append("\n");
-        sb.append(":Product Name: ").append(dev.model).append("\n");
-        sb.append(":Version: Android ").append(dev.androidVersion).append("\n");
-        sb.append(":Serial Number: ").append(dev.board).append("\n");
-        sb.append(":UUID: ").append(dev.profile.hashCode()).append("\n\n");
-
-        sb.append("Physical Memory Array\n");
-        sb.append(":Location: System Board\n");
-        sb.append(":Use: System Memory\n");
-        sb.append(":Maximum Capacity: ").append(ramTotalMb).append(" MB\n");
-        sb.append(":Number Of Devices: 1\n\n");
-
-        sb.append("Memory Device\n");
-        sb.append(":Array Handle: 0x0001\n");
-        sb.append(":Total Width: 64 bits\n");
-        sb.append(":Data Width: 64 bits\n");
-        sb.append(":Size: ").append(ramTotalMb).append(" MB\n");
-        sb.append(":Form Factor: Row Of Chips\n");
-        sb.append(":Locator: RAM 0\n");
-        sb.append(":Bank Locator: Bank 0\n");
-        sb.append(":Type: LPDDR4\n");
-        sb.append(":Type Detail: Synchronous\n");
-        sb.append(":Speed: 1866 MT/s\n");
-        sb.append(":Manufacturer: ").append(dev.manufacturer).append("\n\n");
-
-        // 2. HARDWARE: PROCESSOR
-        int cores = Math.max(1, Runtime.getRuntime().availableProcessors());
-        sb.append("<<<lnx_cpuinfo:sep(58)>>>\n");
-        for (int i = 0; i < cores; i++) {
-            sb.append("processor: ").append(i).append("\n");
-            sb.append("model name: ").append(dev.hardwareSoc).append(" (").append(dev.board).append(")\n");
-            sb.append("cpu MHz: 2000.000\n");
-            sb.append("cache size: 1024 KB\n");
-            sb.append("flags: fp asimd evtstrm aes pmull sha1 sha2 crc32\n\n");
+    public static AppCountSnapshot readAppCounts(Context ctx) {
+        long now = System.currentTimeMillis();
+        if (cachedAppCounts != null && (now - lastAppCountMillis) < 300_000L) {
+            return cachedAppCounts;
         }
-
-        // 3. HARDWARE: STORAGE
-        long storageSectors512 = Math.round(storage.totalGb * 1024.0 * 1024.0 * 2.0);
-        sb.append("<<<lnx_block_devices:sep(0)>>>\n");
-        sb.append("|device|/sys/block/internal_storage|\n");
-        sb.append("|size|").append(storageSectors512).append("|\n");
-        sb.append("|device/vendor|Internal|\n");
-        sb.append("|device/model|eMMC/UFS Internal Storage (").append(Math.round(storage.totalGb)).append(" GB)|\n");
-        sb.append("|device/type|MMC|\n\n");
-
-        // 4. SOFTWARE: OPERATING SYSTEM
-        sb.append("<<<lnx_distro:sep(124)>>>\n");
-        sb.append("[[[/etc/os-release]]]\n");
-        sb.append("NAME=\"Android\"|VERSION=\"").append(dev.androidVersion)
-          .append(" (SDK ").append(dev.sdk).append(")\"|ID=android|PRETTY_NAME=\"Android ")
-          .append(dev.androidVersion).append(" (").append(dev.manufacturer).append(" ")
-          .append(dev.model).append(")\"\n\n");
-
-        sb.append("<<<lnx_uname>>>\n");
-        sb.append("Linux ").append(AgentConfig.getHostname(context)).append(" ")
-          .append(dev.kernelVersion).append(" #1 SMP PREEMPT ")
-          .append(dev.arch).append(" Android\n\n");
-
-        // 5. SOFTWARE: PACKAGES
-        sb.append("<<<lnx_packages:sep(124)>>>\n");
+        AppCountSnapshot ac = new AppCountSnapshot();
         try {
-            PackageManager pm = context.getPackageManager();
-            List<PackageInfo> packages = pm.getInstalledPackages(0);
-
-            for (PackageInfo pkg : packages) {
-                if (pkg == null || pkg.packageName == null) continue;
-
-                boolean isSystem = false;
-                String appLabel = pkg.packageName;
-
-                if (pkg.applicationInfo != null) {
-                    isSystem = (pkg.applicationInfo.flags & ApplicationInfo.FLAG_SYSTEM) != 0;
-                    try {
-                        CharSequence label = pkg.applicationInfo.loadLabel(pm);
-                        if (label != null && label.length() > 0) {
-                            appLabel = label.toString().replace('|', ' ')
-                                    .replace('\n', ' ').replace('\r', ' ').trim();
-                        }
-                    } catch (Throwable ignored) {}
-                }
-
-                info.totalApps++;
-                if (isSystem) info.systemApps++;
-                else info.userApps++;
-
-                String ver = pkg.versionName != null ? pkg.versionName.trim().replace('|', ' ') : "1.0";
-                String pkgType = isSystem ? "system" : "apk";
-                long verCode = (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P)
-                        ? pkg.getLongVersionCode() : pkg.versionCode;
-
-                sb.append(pkg.packageName).append('|')
-                  .append(ver).append('|')
-                  .append(dev.arch).append('|')
-                  .append(pkgType).append('|')
-                  .append(verCode).append('|')
-                  .append(appLabel).append('|')
-                  .append("installed\n");
-            }
-        } catch (Throwable ignored) {}
-
-        info.fullInventoryPayload = sb.toString();
-        return info;
-    }
-
-    public static BatteryInfo readBattery(Context context) {
-        BatteryInfo out = new BatteryInfo();
-        if (context == null) return out;
-
-        boolean isMt93 = isNewlandMt93();
-        int hwCycles = -1;
-
-        try {
-            Intent battery = context.registerReceiver(null, new IntentFilter(Intent.ACTION_BATTERY_CHANGED));
-            if (battery != null) {
-                int rawLevel = battery.getIntExtra(BatteryManager.EXTRA_LEVEL, -1);
-                int scale = battery.getIntExtra(BatteryManager.EXTRA_SCALE, 100);
-                if (rawLevel >= 0 && scale > 0) {
-                    out.level = (int) Math.round(rawLevel * 100.0 / scale);
-                }
-
-                int plugged = battery.getIntExtra(BatteryManager.EXTRA_PLUGGED, 0);
-                out.plugged = plugged > 0;
-
-                int tempTenths = battery.getIntExtra(BatteryManager.EXTRA_TEMPERATURE, Integer.MIN_VALUE);
-                if (tempTenths != Integer.MIN_VALUE && tempTenths != 0) {
-                    out.temperatureC = tempTenths / 10.0;
-                }
-
-                int voltageMv = battery.getIntExtra(BatteryManager.EXTRA_VOLTAGE, -1);
-                if (voltageMv > 0) {
-                    out.voltageV = voltageMv > 100 ? (voltageMv / 1000.0) : voltageMv;
-                }
-
-                int status = battery.getIntExtra(BatteryManager.EXTRA_STATUS, BatteryManager.BATTERY_STATUS_UNKNOWN);
-                switch (status) {
-                    case BatteryManager.BATTERY_STATUS_CHARGING:
-                        out.status = "Charging";
-                        break;
-                    case BatteryManager.BATTERY_STATUS_DISCHARGING:
-                        out.status = "Discharging";
-                        break;
-                    case BatteryManager.BATTERY_STATUS_FULL:
-                        out.status = "Full";
-                        break;
-                    case BatteryManager.BATTERY_STATUS_NOT_CHARGING:
-                        out.status = "Not Charging";
-                        break;
-                    default:
-                        out.status = "Unknown";
-                }
-
-                int rawHealth = battery.getIntExtra(BatteryManager.EXTRA_HEALTH, BatteryManager.BATTERY_HEALTH_UNKNOWN);
-                switch (rawHealth) {
-                    case BatteryManager.BATTERY_HEALTH_GOOD:
-                        out.healthStatus = "Good";
-                        break;
-                    case BatteryManager.BATTERY_HEALTH_OVERHEAT:
-                        out.healthStatus = "Overheat";
-                        break;
-                    case BatteryManager.BATTERY_HEALTH_DEAD:
-                        out.healthStatus = "Dead";
-                        break;
-                    case BatteryManager.BATTERY_HEALTH_OVER_VOLTAGE:
-                        out.healthStatus = "Over Voltage";
-                        break;
-                    case BatteryManager.BATTERY_HEALTH_COLD:
-                        out.healthStatus = "Cold";
-                        break;
-                    default:
-                        out.healthStatus = "Unknown";
-                }
-
-                String[] cycleExtras = {
-                        "android.os.extra.CYCLE_COUNT",
-                        "cycle_count",
-                        "charge_cycles",
-                        "battery_cycle"
-                };
-                for (String key : cycleExtras) {
-                    int c = battery.getIntExtra(key, -1);
-                    if (c > 0) {
-                        hwCycles = c;
-                        break;
-                    }
-                }
-            }
-        } catch (Throwable ignored) {}
-
-        boolean hasHardwareChargeCounter = false;
-        try {
-            BatteryManager bm = (BatteryManager) context.getSystemService(Context.BATTERY_SERVICE);
-            if (bm != null) {
-                try {
-                    int chargeCounterUah = bm.getIntProperty(BatteryManager.BATTERY_PROPERTY_CHARGE_COUNTER);
-                    if (validBatteryProperty(chargeCounterUah) && chargeCounterUah > 0) {
-                        out.chargeCounterMah = chargeCounterUah > 10000
-                                ? (chargeCounterUah / 1000.0) : chargeCounterUah;
-                        hasHardwareChargeCounter = true;
-                    }
-                } catch (Throwable ignored) {}
-
-                try {
-                    int currentNowUa = bm.getIntProperty(BatteryManager.BATTERY_PROPERTY_CURRENT_NOW);
-                    if (validBatteryProperty(currentNowUa) && currentNowUa != 0) {
-                        out.currentNowMa = Math.abs(currentNowUa) > 20000
-                                ? (currentNowUa / 1000.0) : currentNowUa;
-                    }
-                } catch (Throwable ignored) {}
-
-                try {
-                    int currentAvgUa = bm.getIntProperty(BatteryManager.BATTERY_PROPERTY_CURRENT_AVERAGE);
-                    if (validBatteryProperty(currentAvgUa)) {
-                        out.currentAverageMa = Math.abs(currentAvgUa) > 20000
-                                ? (currentAvgUa / 1000.0) : currentAvgUa;
-                    }
-                } catch (Throwable ignored) {}
-
-                try {
-                    int cycles = bm.getIntProperty(7); // BATTERY_PROPERTY_CYCLE_COUNT
-                    if (validBatteryProperty(cycles) && cycles > 0) {
-                        hwCycles = Math.max(hwCycles, cycles);
-                    }
-                } catch (Throwable ignored) {}
-            }
-        } catch (Throwable ignored) {}
-
-        // 1. Check Sysfs Kernel nodes for cycle count if not already > 0
-        if (hwCycles <= 0) {
-            String[] cyclePaths = {
-                    "/sys/class/power_supply/battery/cycle_count",
-                    "/sys/class/power_supply/bms/cycle_count",
-                    "/sys/class/power_supply/battery/battery_cycle",
-                    "/sys/devices/platform/charger/power_supply/battery/cycle_count",
-                    "/sys/devices/platform/mtk-battery/power_supply/battery/cycle_count",
-                    "/sys/devices/platform/battery/power_supply/battery/cycle_count",
-                    "/sys/class/power_supply/fg_adc/cycle_count"
-            };
-            for (String path : cyclePaths) {
-                try {
-                    Double val = readNumber(path);
-                    if (val != null && val > 0) {
-                        hwCycles = val.intValue();
-                        break;
-                    }
-                } catch (Throwable ignored) {}
-            }
-        }
-
-        // 2. Design Spec (4800 mAh for Newland MT93)
-        try {
-            double manual = AgentConfig.getDesignCapacityMah(context);
-            if (isPositive(manual)) {
-                out.designCapacityMah = manual;
-                out.designCapacitySource = "Manual Configuration";
-            } else {
-                double profileVal = readPowerProfileCapacityMah(context);
-                if (isPositive(profileVal)) {
-                    out.designCapacityMah = profileVal;
-                    out.designCapacitySource = "Android System (" + Math.round(profileVal) + " mAh)";
+            PackageManager pm = ctx.getPackageManager();
+            List<PackageInfo> pkgs = pm.getInstalledPackages(0);
+            ac.totalApps = pkgs.size();
+            for (PackageInfo pi : pkgs) {
+                if (pi == null || pi.applicationInfo == null) continue;
+                if ((pi.applicationInfo.flags & ApplicationInfo.FLAG_SYSTEM) != 0) {
+                    ac.systemApps++;
                 } else {
-                    out.designCapacityMah = isMt93 ? MT93_DESIGN_CAPACITY_MAH : 5000.0;
-                    out.designCapacitySource = "Factory Spec (" + Math.round(out.designCapacityMah) + " mAh)";
+                    ac.userApps++;
                 }
             }
+        } catch (Throwable ignored) {}
+        cachedAppCounts = ac;
+        lastAppCountMillis = now;
+        return ac;
+    }
+
+    private static JSONArray cachedInventorySections = null;
+    private static long lastInventoryMillis = 0L;
+
+    public static BatterySnapshot readBattery(Context ctx, AgentConfig cfg) {
+        BatterySnapshot bs = new BatterySnapshot();
+        Intent batIntent = ctx.registerReceiver(null, new IntentFilter(Intent.ACTION_BATTERY_CHANGED));
+        int level = -1;
+        int scale = 100;
+        int status = -1;
+        int tempTenths = 0;
+        int voltMv = 0;
+        int sysCycles = -1;
+        if (batIntent != null) {
+            level = batIntent.getIntExtra(BatteryManager.EXTRA_LEVEL, -1);
+            scale = Math.max(1, batIntent.getIntExtra(BatteryManager.EXTRA_SCALE, 100));
+            status = batIntent.getIntExtra(BatteryManager.EXTRA_STATUS, -1);
+            tempTenths = batIntent.getIntExtra(BatteryManager.EXTRA_TEMPERATURE, 0);
+            voltMv = batIntent.getIntExtra(BatteryManager.EXTRA_VOLTAGE, 0);
+            sysCycles = batIntent.getIntExtra("android.os.extra.CYCLE_COUNT", -1);
+        }
+
+        bs.levelPct = level >= 0 ? (level * 100) / scale : 0;
+        boolean charging = status == BatteryManager.BATTERY_STATUS_CHARGING;
+        bs.statusText = status == BatteryManager.BATTERY_STATUS_FULL ? "Full"
+                : charging ? "Charging"
+                : status == BatteryManager.BATTERY_STATUS_DISCHARGING ? "Discharging"
+                : "Not Charging";
+        bs.tempC = tempTenths / 10.0;
+        bs.voltageV = voltMv / 1000.0;
+
+        BatteryManager bm = (BatteryManager) ctx.getSystemService(Context.BATTERY_SERVICE);
+        int chargeCounterUah = 0;
+        if (bm != null) {
+            try {
+                chargeCounterUah = bm.getIntProperty(BatteryManager.BATTERY_PROPERTY_CHARGE_COUNTER);
+                int curUa = bm.getIntProperty(BatteryManager.BATTERY_PROPERTY_CURRENT_NOW);
+                if (Math.abs(curUa) > 10000) curUa /= 1000;
+                bs.currentMa = curUa;
+            } catch (Throwable ignored) {}
+        }
+
+        double sysDesign = getDesignCapacityMah(ctx, cfg);
+        BatteryHistory hist = new BatteryHistory(ctx);
+        hist.recordSample(ctx, bs.levelPct, charging, chargeCounterUah, sysDesign, sysCycles);
+        BatteryHistory.BatteryData hd = hist.getStats(cfg, sysDesign);
+
+        bs.designMah = hd.designCapMah;
+        bs.estFullMah = hd.estFullCapMah;
+        bs.healthPct = hd.healthPercent;
+        bs.cycles = hd.estimatedCycles;
+        bs.calcMethod = hd.calcMethod;
+        return bs;
+    }
+
+    private static double getDesignCapacityMah(Context ctx, AgentConfig cfg) {
+        int override = cfg.getBatteryDesignMahOverride();
+        if (override > 200) return override;
+        try {
+            Class<?> ppClass = Class.forName("com.android.internal.os.PowerProfile");
+            Object pp = ppClass.getConstructor(Context.class).newInstance(ctx);
+            Object capObj = ppClass.getMethod("getBatteryCapacity").invoke(pp);
+            if (capObj instanceof Number) {
+                double val = ((Number) capObj).doubleValue();
+                if (val > 500 && val < 20000) return val;
+            }
+        } catch (Throwable ignored) {}
+        String model = (Build.MODEL == null ? "" : Build.MODEL).toUpperCase(Locale.US);
+        if (model.contains("MT93")) return 4800.0;
+        return 4500.0;
+    }
+
+    public static RamStorageSnapshot readRamStorage(Context ctx) {
+        RamStorageSnapshot rs = new RamStorageSnapshot();
+        try {
+            ActivityManager am = (ActivityManager) ctx.getSystemService(Context.ACTIVITY_SERVICE);
+            ActivityManager.MemoryInfo mi = new ActivityManager.MemoryInfo();
+            if (am != null) {
+                am.getMemoryInfo(mi);
+                double div = 1024.0 * 1024.0 * 1024.0;
+                rs.ramTotalGb = mi.totalMem / div;
+                rs.ramFreeGb = mi.availMem / div;
+                rs.ramUsedGb = Math.max(0.0, rs.ramTotalGb - rs.ramFreeGb);
+                rs.ramPct = mi.totalMem > 0 ? (int) Math.round((rs.ramUsedGb / rs.ramTotalGb) * 100.0) : 0;
+            }
+        } catch (Throwable ignored) {}
+
+        try {
+            StatFs sf = new StatFs(Environment.getDataDirectory().getPath());
+            long total = sf.getTotalBytes();
+            long avail = sf.getAvailableBytes();
+            long used = Math.max(0L, total - avail);
+            double div = 1024.0 * 1024.0 * 1024.0;
+            rs.storageTotalGb = total / div;
+            rs.storageFreeGb = avail / div;
+            rs.storageUsedGb = used / div;
+            rs.storagePct = total > 0 ? (int) Math.round(((double) used / total) * 100.0) : 0;
+        } catch (Throwable ignored) {}
+
+        return rs;
+    }
+
+    public static boolean hasFineLocationPermission(Context ctx) {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.M) return true;
+        try {
+            return ctx.checkSelfPermission(Manifest.permission.ACCESS_FINE_LOCATION)
+                    == PackageManager.PERMISSION_GRANTED;
         } catch (Throwable ignored) {
-            out.designCapacityMah = isMt93 ? MT93_DESIGN_CAPACITY_MAH : 5000.0;
-            out.designCapacitySource = "Factory Spec";
+            return false;
         }
-
-        // 3. Full Capacity Reference Scale at 100% Charge: 2946 mAh on Newland MT93
-        final double FULL_CHARGE_REF_MAH = isMt93 ? MT93_FULL_CAPACITY_MAH : out.designCapacityMah;
-
-        if (!isPositive(out.chargeCounterMah) && out.level >= 0) {
-            out.chargeCounterMah = Math.round(FULL_CHARGE_REF_MAH * (out.level / 100.0));
-        }
-
-        // 4. Update continuous battery charge session & cycle accumulator
-        BatteryHistory.updateChargeSession(
-                context, out.level, out.status, out.plugged,
-                out.chargeCounterMah, out.voltageV, FULL_CHARGE_REF_MAH);
-        out.estimateSamples = BatteryHistory.getSampleCount(context);
-        out.chargeSessions = BatteryHistory.getChargeSessionCount(context);
-        out.totalChargedMah = BatteryHistory.getAccumulatedChargedMah(context);
-
-        int trackedCycles = BatteryHistory.getEstimatedCycles(context, FULL_CHARGE_REF_MAH);
-        if (hwCycles > 0) {
-            out.cycleCount = Math.max(hwCycles, trackedCycles);
-        } else {
-            out.cycleCount = Math.max(0, trackedCycles);
-        }
-
-        // 5. Health Calculation Based on 100% Full Capacity = 2946 mAh
-        double calibratedFullMah = BatteryHistory.getCalibratedFullChargeMah(context);
-        double calibratedVolt = BatteryHistory.getCalibratedFullVoltage(context);
-        if (!Double.isNaN(calibratedVolt)) {
-            out.fullChargeVoltageV = calibratedVolt;
-        }
-
-        if (isMt93) {
-            if (out.level == 100 || "Full".equalsIgnoreCase(out.status)) {
-                out.fullCapacityMah = (hasHardwareChargeCounter && out.chargeCounterMah > 1500.0)
-                        ? out.chargeCounterMah : FULL_CHARGE_REF_MAH;
-                out.fullChargeVoltageV = !Double.isNaN(out.voltageV) ? out.voltageV : 4.34;
-                out.healthPercent = Math.min(100.0, (out.fullCapacityMah / FULL_CHARGE_REF_MAH) * 100.0);
-                out.fullCapacitySource = "100% Full Charge (" + Math.round(out.fullCapacityMah) + " / 2946 mAh)";
-            } else if (out.level >= 15 && isPositive(out.chargeCounterMah)) {
-                double dynamicFullMah = out.chargeCounterMah / (out.level / 100.0);
-                out.fullCapacityMah = !Double.isNaN(calibratedFullMah) ? calibratedFullMah : FULL_CHARGE_REF_MAH;
-                out.healthPercent = Math.min(100.0, (dynamicFullMah / FULL_CHARGE_REF_MAH) * 100.0);
-                out.fullCapacitySource = "Full Capacity 2946 mAh @ 100% (" + out.level + "% State)";
-            } else {
-                out.fullCapacityMah = !Double.isNaN(calibratedFullMah) ? calibratedFullMah : FULL_CHARGE_REF_MAH;
-                out.healthPercent = Math.min(100.0, (out.fullCapacityMah / FULL_CHARGE_REF_MAH) * 100.0);
-                out.fullCapacitySource = "Full Capacity 2946 mAh @ 100% Baseline";
-            }
-        } else {
-            if (out.level == 100 || "Full".equalsIgnoreCase(out.status)) {
-                out.fullCapacityMah = (isPositive(out.chargeCounterMah) && out.chargeCounterMah > 1500.0)
-                        ? out.chargeCounterMah : out.designCapacityMah;
-                out.fullChargeVoltageV = !Double.isNaN(out.voltageV) ? out.voltageV : 4.35;
-                out.healthPercent = Math.min(100.0, (out.fullCapacityMah / out.designCapacityMah) * 100.0);
-                out.fullCapacitySource = "100% Full Cut-off";
-            } else if (out.level >= 15 && isPositive(out.chargeCounterMah)) {
-                out.fullCapacityMah = out.chargeCounterMah / (out.level / 100.0);
-                out.healthPercent = Math.min(100.0, (out.fullCapacityMah / out.designCapacityMah) * 100.0);
-                out.fullCapacitySource = "Dynamic Estimate (" + out.level + "% State)";
-                out.fullCapacityEstimated = true;
-            } else {
-                out.fullCapacityMah = out.designCapacityMah;
-                out.healthPercent = 100.0;
-                out.fullCapacitySource = "System Baseline";
-            }
-        }
-
-        return out;
     }
 
-    public static UsageInfo readRam(Context context) {
-        ActivityManager am = (ActivityManager) context.getSystemService(Context.ACTIVITY_SERVICE);
-        ActivityManager.MemoryInfo mi = new ActivityManager.MemoryInfo();
-        if (am != null) am.getMemoryInfo(mi);
-
-        UsageInfo out = new UsageInfo();
-        out.totalGb = bytesToGb(mi.totalMem);
-        out.freeGb = bytesToGb(mi.availMem);
-        out.usedGb = Math.max(0, out.totalGb - out.freeGb);
-        out.usedPercent = out.totalGb > 0 ? (out.usedGb / out.totalGb * 100.0) : 0.0;
-        return out;
-    }
-
-    public static UsageInfo readStorage() {
-        StatFs stat = new StatFs(Environment.getDataDirectory().getAbsolutePath());
-        UsageInfo out = new UsageInfo();
-        out.totalGb = bytesToGb(stat.getTotalBytes());
-        out.freeGb = bytesToGb(stat.getAvailableBytes());
-        out.usedGb = Math.max(0, out.totalGb - out.freeGb);
-        out.usedPercent = out.totalGb > 0 ? (out.usedGb / out.totalGb * 100.0) : 0.0;
-        return out;
+    public static boolean isLocationServiceEnabled(Context ctx) {
+        try {
+            LocationManager lm = (LocationManager) ctx.getSystemService(Context.LOCATION_SERVICE);
+            if (lm == null) return true;
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+                return lm.isLocationEnabled();
+            }
+            return lm.isProviderEnabled(LocationManager.GPS_PROVIDER)
+                    || lm.isProviderEnabled(LocationManager.NETWORK_PROVIDER);
+        } catch (Throwable ignored) {
+            return true;
+        }
     }
 
     @SuppressWarnings("deprecation")
-    public static WifiStatus readWifi(Context context) {
-        WifiStatus out = new WifiStatus();
-        out.ip = getLocalIpv4();
+    public static WifiSnapshot readWifi(Context ctx) {
+        WifiSnapshot ws = new WifiSnapshot();
+        ws.ip = AgentConfig.getDeviceIpv4(ctx);
+        ws.status = "Disconnected";
+        ws.ssid = "N/A";
+        ws.bssid = "N/A";
+        ws.vendor = "AP";
+        ws.bandChannel = "N/A";
 
-        WifiManager wm = null;
+        boolean hasWifiTransport = false;
+        WifiInfo capWifiInfo = null;
         try {
-            wm = (WifiManager) context.getApplicationContext()
-                    .getSystemService(Context.WIFI_SERVICE);
-            ConnectivityManager cm = (ConnectivityManager) context
-                    .getSystemService(Context.CONNECTIVITY_SERVICE);
-
-            Network wifiNetwork = null;
-            NetworkCapabilities wifiCaps = null;
-
+            ConnectivityManager cm = (ConnectivityManager) ctx.getSystemService(Context.CONNECTIVITY_SERVICE);
             if (cm != null) {
-                Network[] networks = cm.getAllNetworks();
-                if (networks != null) {
-                    for (Network network : networks) {
-                        NetworkCapabilities caps = cm.getNetworkCapabilities(network);
-                        if (caps != null && caps.hasTransport(NetworkCapabilities.TRANSPORT_WIFI)) {
-                            wifiNetwork = network;
-                            wifiCaps = caps;
-                            break;
+                Network active = cm.getActiveNetwork();
+                NetworkCapabilities nc = active != null ? cm.getNetworkCapabilities(active) : null;
+                if (nc != null && nc.hasTransport(NetworkCapabilities.TRANSPORT_WIFI)) {
+                    hasWifiTransport = true;
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                        TransportInfo ti = nc.getTransportInfo();
+                        if (ti instanceof WifiInfo) {
+                            capWifiInfo = (WifiInfo) ti;
                         }
                     }
                 }
             }
+        } catch (Throwable ignored) {}
 
-            if (wifiNetwork != null) {
-                out.connected = true;
-                out.detectionSource = "ConnectivityManager Wi-Fi transport";
-
-                LinkProperties lp = cm.getLinkProperties(wifiNetwork);
-                String ip = ipv4FromLinkProperties(lp);
-                if (ip != null) out.ip = ip;
-
-                WifiInfo info = wifiInfoFromCapabilities(wifiCaps);
-                if (info != null) {
-                    fillWifiInfo(out, info, "NetworkCapabilities WifiInfo");
-                }
-            }
-
-            if (!out.connected) {
-                String wlanIp = getWifiInterfaceIpv4();
-                if (wlanIp != null) {
-                    out.connected = true;
-                    out.ip = wlanIp;
-                    out.detectionSource = "wlan interface";
-                }
-            }
-
-            // Always merge WifiManager.getConnectionInfo() so SSID and BSSID are populated on Android 11
-            // even when NetworkCapabilities redacts them!
-            if (wm != null && wm.isWifiEnabled()) {
-                WifiInfo legacy = wm.getConnectionInfo();
-                if (legacy != null) {
-                    if (!out.connected && hasUsefulWifiInfo(legacy)) {
-                        out.connected = true;
-                        out.detectionSource = "WifiManager connection info";
-                    }
-                    if (out.connected) {
-                        fillWifiInfo(out, legacy, "WifiManager connection info");
-                    }
-                }
-
-                // Fallback to ScanResults matching if BSSID or SSID is still missing
-                if (out.connected && ("N/A".equals(out.bssid) || "Not Connected".equals(out.ssid))) {
-                    enrichFromScanResults(wm, out);
-                }
-            }
-
-            if (out.connected && "Not Connected".equals(out.ssid)) {
-                out.ssid = "Connected (SSID restricted by Android)";
-            }
-        } catch (SecurityException e) {
-            String wlanIp = getWifiInterfaceIpv4();
-            if (wlanIp != null) {
-                out.connected = true;
-                out.ip = wlanIp;
-                out.detectionSource = "wlan interface (permission fallback)";
-                out.ssid = "Connected (permission restricted)";
-            }
-        } catch (Exception ignored) {
-            String wlanIp = getWifiInterfaceIpv4();
-            if (wlanIp != null) {
-                out.connected = true;
-                out.ip = wlanIp;
-                out.detectionSource = "wlan interface (fallback)";
-                out.ssid = "Connected (details unavailable)";
-            }
-        }
-
-        // Update AP Roaming Tracker (UniFi / Multi-AP BSSID & Channel Roaming)
-        WifiRoamingTracker.RoamingInfo roam = WifiRoamingTracker.updateAndRead(
-                context, out.connected, out.ssid, out.bssid, out.frequencyMhz, out.rssi, out.ip);
-        out.bssid = roam.currentBssid;
-        out.apVendor = roam.apVendor;
-        out.bandChannel = roam.bandChannel;
-        out.roamsLastHour = roam.roamsLastHour;
-        out.totalRoams = roam.totalRoams;
-        out.previousBssid = roam.previousBssid;
-        out.lastRoamReason = roam.lastRoamReason;
-        out.roamSummary = roam.summaryText;
-
-        return out;
-    }
-
-    public static String getDetectedGatewayIp(Context context) {
-        if (context == null) return "";
         try {
-            ConnectivityManager cm = (ConnectivityManager) context.getSystemService(Context.CONNECTIVITY_SERVICE);
-            if (cm != null) {
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
-                    Network active = cm.getActiveNetwork();
-                    if (active != null) {
-                        LinkProperties lp = cm.getLinkProperties(active);
-                        if (lp != null) {
-                            for (RouteInfo route : lp.getRoutes()) {
-                                if (route.isDefaultRoute() && route.getGateway() != null) {
-                                    String gw = route.getGateway().getHostAddress();
-                                    if (gw != null && !gw.isEmpty() && !"0.0.0.0".equals(gw)) {
-                                        return gw;
+            WifiManager wm = (WifiManager) ctx.getApplicationContext().getSystemService(Context.WIFI_SERVICE);
+            if (wm != null && wm.isWifiEnabled()) {
+                WifiInfo wi = wm.getConnectionInfo();
+                if (wi == null) wi = capWifiInfo;
+
+                int rssi = wi != null ? wi.getRssi() : -127;
+                int freq = wi != null ? wi.getFrequency() : 0;
+                int speed = wi != null ? wi.getLinkSpeed() : 0;
+                if (capWifiInfo != null) {
+                    if (rssi <= -127 && capWifiInfo.getRssi() > -127) rssi = capWifiInfo.getRssi();
+                    if (freq <= 0 && capWifiInfo.getFrequency() > 0) freq = capWifiInfo.getFrequency();
+                    if (speed <= 0 && capWifiInfo.getLinkSpeed() > 0) speed = capWifiInfo.getLinkSpeed();
+                }
+
+                boolean supplicantCompleted = wi != null && wi.getSupplicantState() == SupplicantState.COMPLETED;
+                boolean validRssi = rssi > -127 && rssi < 0;
+                boolean hasLocalIp = ws.ip != null && !ws.ip.isEmpty() && !"0.0.0.0".equals(ws.ip);
+                boolean isConnected = hasWifiTransport
+                        || (wi != null && wi.getNetworkId() != -1)
+                        || supplicantCompleted
+                        || validRssi
+                        || freq > 0
+                        || hasLocalIp;
+
+                if (isConnected) {
+                    ws.status = "Connected";
+                    ws.rssiDbm = validRssi ? rssi : 0;
+                    ws.linkSpeedMbps = Math.max(0, speed);
+                    ws.bandChannel = WifiRoamingTracker.formatBandAndChannel(freq);
+
+                    String rawSsid = wi != null ? wi.getSSID() : null;
+                    if (!WifiRoamingTracker.isValidSsid(rawSsid) && capWifiInfo != null) {
+                        rawSsid = capWifiInfo.getSSID();
+                    }
+                    String rawBssid = wi != null ? wi.getBSSID() : null;
+                    if (!WifiRoamingTracker.isValidBssid(rawBssid) && capWifiInfo != null) {
+                        rawBssid = capWifiInfo.getBSSID();
+                    }
+
+                    // Fallback ke ScanResults jika BSSID diketahui tetapi SSID tersembunyi (atau sebaliknya)
+                    if ((!WifiRoamingTracker.isValidSsid(rawSsid) || !WifiRoamingTracker.isValidBssid(rawBssid))
+                            && hasFineLocationPermission(ctx) && isLocationServiceEnabled(ctx)) {
+                        try {
+                            List<ScanResult> scans = wm.getScanResults();
+                            if (scans != null) {
+                                if (WifiRoamingTracker.isValidBssid(rawBssid) && !WifiRoamingTracker.isValidSsid(rawSsid)) {
+                                    for (ScanResult sr : scans) {
+                                        if (sr != null && sr.BSSID != null && sr.BSSID.equalsIgnoreCase(rawBssid)
+                                                && WifiRoamingTracker.isValidSsid(sr.SSID)) {
+                                            rawSsid = sr.SSID;
+                                            break;
+                                        }
                                     }
+                                } else if (WifiRoamingTracker.isValidSsid(rawSsid) && !WifiRoamingTracker.isValidBssid(rawBssid)) {
+                                    String cleanTarget = rawSsid.replace("\"", "").trim();
+                                    ScanResult best = null;
+                                    for (ScanResult sr : scans) {
+                                        if (sr != null && cleanTarget.equals(sr.SSID) && WifiRoamingTracker.isValidBssid(sr.BSSID)) {
+                                            if (best == null || sr.level > best.level) best = sr;
+                                        }
+                                    }
+                                    if (best != null) rawBssid = best.BSSID;
                                 }
                             }
-                        }
+                        } catch (Throwable ignored) {}
                     }
-                }
-            }
-        } catch (Throwable ignored) {}
-        try {
-            WifiManager wm = (WifiManager) context.getApplicationContext().getSystemService(Context.WIFI_SERVICE);
-            if (wm != null) {
-                android.net.DhcpInfo dhcp = wm.getDhcpInfo();
-                if (dhcp != null && dhcp.gateway != 0) {
-                    int g = dhcp.gateway;
-                    return (g & 0xFF) + "." + ((g >> 8) & 0xFF) + "." + ((g >> 16) & 0xFF) + "." + ((g >> 24) & 0xFF);
-                }
-            }
-        } catch (Throwable ignored) {}
-        return "";
-    }
 
-    private static WifiInfo wifiInfoFromCapabilities(NetworkCapabilities caps) {
-        if (caps == null || Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) return null;
-        try {
-            Object transportInfo = caps.getTransportInfo();
-            return transportInfo instanceof WifiInfo ? (WifiInfo) transportInfo : null;
-        } catch (Exception ignored) {
-            return null;
-        }
-    }
+                    WifiRoamingTracker rt = WifiRoamingTracker.getInstance();
+                    rt.recordWifiSample(ctx, rawSsid, rawBssid, freq, ws.ip);
 
-    private static void fillWifiInfo(WifiStatus out, WifiInfo info, String source) {
-        if (info == null) return;
-        out.detailsSource = source;
+                    String resolvedSsid = WifiRoamingTracker.isValidSsid(rawSsid)
+                            ? rawSsid.replace("\"", "").trim()
+                            : rt.getCachedSsid(ctx, ws.ip);
+                    String resolvedBssid = WifiRoamingTracker.isValidBssid(rawBssid)
+                            ? rawBssid.trim().toUpperCase(Locale.US)
+                            : rt.getCachedBssid(ctx, ws.ip);
 
-        String ssid = info.getSSID();
-        if (ssid != null && !ssid.isEmpty()
-                && !"<unknown ssid>".equalsIgnoreCase(ssid)
-                && !WifiManager.UNKNOWN_SSID.equals(ssid)) {
-            if (ssid.startsWith("\"") && ssid.endsWith("\"") && ssid.length() >= 2) {
-                ssid = ssid.substring(1, ssid.length() - 1);
-            }
-            out.ssid = ssid;
-        }
+                    boolean fineGranted = hasFineLocationPermission(ctx);
+                    boolean gpsEnabled = isLocationServiceEnabled(ctx);
 
-        String cleanBssid = WifiRoamingTracker.normalizeBssid(info.getBSSID());
-        if (cleanBssid != null) {
-            out.bssid = cleanBssid;
-        }
-
-        int rssi = info.getRssi();
-        if (isUsableRssi(rssi)) {
-            out.rssi = rssi;
-        }
-
-        int speed = info.getLinkSpeed();
-        if (speed >= 0) out.linkSpeedMbps = speed;
-
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
-            int frequency = info.getFrequency();
-            if (frequency > 0) out.frequencyMhz = frequency;
-        }
-    }
-
-    private static void enrichFromScanResults(WifiManager wm, WifiStatus out) {
-        try {
-            List<ScanResult> results = wm.getScanResults();
-            if (results == null || results.isEmpty()) return;
-            ScanResult best = null;
-            int bestDiff = Integer.MAX_VALUE;
-            for (ScanResult sr : results) {
-                if (sr == null || sr.BSSID == null) continue;
-                if (out.frequencyMhz > 0 && sr.frequency != out.frequencyMhz) continue;
-                if (!"Not Connected".equals(out.ssid) && sr.SSID != null && !sr.SSID.isEmpty()
-                        && !out.ssid.equals(sr.SSID)) {
-                    continue;
-                }
-                int diff = (out.rssi != Integer.MIN_VALUE) ? Math.abs(sr.level - out.rssi) : -sr.level;
-                if (diff < bestDiff && diff <= 8) {
-                    bestDiff = diff;
-                    best = sr;
-                }
-            }
-            if (best != null) {
-                String cleanBssid = WifiRoamingTracker.normalizeBssid(best.BSSID);
-                if ("N/A".equals(out.bssid) && cleanBssid != null) {
-                    out.bssid = cleanBssid;
-                }
-                if ("Not Connected".equals(out.ssid) && best.SSID != null && !best.SSID.isEmpty()) {
-                    out.ssid = best.SSID;
-                }
-            }
-        } catch (Throwable ignored) {}
-    }
-
-    private static boolean hasUsefulWifiInfo(WifiInfo info) {
-        if (info == null) return false;
-        int rssi = info.getRssi();
-        if (isUsableRssi(rssi)) return true;
-        if (info.getLinkSpeed() > 0) return true;
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP && info.getFrequency() > 0) return true;
-        String ssid = info.getSSID();
-        return ssid != null && !ssid.isEmpty()
-                && !"<unknown ssid>".equalsIgnoreCase(ssid)
-                && !WifiManager.UNKNOWN_SSID.equals(ssid);
-    }
-
-    private static String ipv4FromLinkProperties(LinkProperties lp) {
-        if (lp == null) return null;
-        for (LinkAddress la : lp.getLinkAddresses()) {
-            if (la.getAddress() instanceof Inet4Address && !la.getAddress().isLoopbackAddress()) {
-                String ip = la.getAddress().getHostAddress();
-                if (ip != null && !ip.startsWith("169.254.")) return ip;
-            }
-        }
-        return null;
-    }
-
-    private static String getWifiInterfaceIpv4() {
-        try {
-            for (NetworkInterface ni : Collections.list(NetworkInterface.getNetworkInterfaces())) {
-                String name = ni.getName() == null ? "" : ni.getName().toLowerCase(Locale.US);
-                if (!ni.isUp() || ni.isLoopback()
-                        || !(name.startsWith("wlan") || name.startsWith("wifi"))) {
-                    continue;
-                }
-                for (java.net.InetAddress addr : Collections.list(ni.getInetAddresses())) {
-                    if (addr instanceof Inet4Address && !addr.isLoopbackAddress()) {
-                        String ip = addr.getHostAddress();
-                        if (ip != null && !ip.startsWith("169.254.")) return ip;
+                    if (!resolvedSsid.isEmpty()) {
+                        ws.ssid = resolvedSsid;
+                    } else if (!fineGranted) {
+                        ws.ssid = "Connected (Izin Lokasi Akurat diperlukan)";
+                    } else if (!gpsEnabled) {
+                        ws.ssid = "Connected (Nyalakan GPS/Lokasi HP)";
+                    } else {
+                        ws.ssid = "Connected (SSID restricted by OS)";
                     }
-                }
-            }
-        } catch (Exception ignored) {}
-        return null;
-    }
 
-    public static DeviceInfo readDeviceInfo() {
-        DeviceInfo out = new DeviceInfo();
-        out.manufacturer = safe(Build.MANUFACTURER);
-        out.model = safe(Build.MODEL);
-        out.androidVersion = safe(Build.VERSION.RELEASE);
-        out.sdk = Build.VERSION.SDK_INT;
-        out.uptimeMs = SystemClock.elapsedRealtime();
-        out.profile = out.manufacturer + " " + out.model;
-        out.hardwareSoc = safe(Build.HARDWARE);
-        out.board = safe(Build.BOARD);
-        out.arch = safe(System.getProperty("os.arch"));
-        out.kernelVersion = safe(System.getProperty("os.version"));
-        return out;
-    }
-
-    public static String getLocalIpv4() {
-        try {
-            for (NetworkInterface ni : Collections.list(NetworkInterface.getNetworkInterfaces())) {
-                if (!ni.isUp() || ni.isLoopback()) continue;
-                for (java.net.InetAddress addr : Collections.list(ni.getInetAddresses())) {
-                    if (addr instanceof Inet4Address && !addr.isLoopbackAddress()) {
-                        String ip = addr.getHostAddress();
-                        if (ip != null && !ip.startsWith("169.254.")) return ip;
+                    if (!resolvedBssid.isEmpty()) {
+                        ws.bssid = resolvedBssid;
+                    } else if (!fineGranted) {
+                        ws.bssid = "Butuh Izin Lokasi Akurat";
+                    } else if (!gpsEnabled) {
+                        ws.bssid = "Nyalakan GPS/Lokasi HP";
+                    } else {
+                        ws.bssid = "Restricted (Enable Location)";
                     }
+
+                    ws.vendor = WifiRoamingTracker.identifyApVendor(resolvedBssid);
                 }
-            }
-        } catch (Exception ignored) {}
-        return "N/A";
-    }
-
-    public static boolean isNewlandMt93() {
-        String joined = (safe(Build.MANUFACTURER) + " " + safe(Build.MODEL) + " "
-                + safe(Build.PRODUCT) + " " + safe(Build.DEVICE)).toUpperCase(Locale.US);
-        return joined.contains("NEWLAND") || joined.contains("MT93") || joined.contains("NLS-MT93");
-    }
-
-    private static boolean isUsableRssi(int rssi) {
-        return rssi > -127 && rssi <= 0;
-    }
-
-    private static boolean validBatteryProperty(int value) {
-        return value != Integer.MIN_VALUE && value != Integer.MAX_VALUE;
-    }
-
-    private static Double readNumber(String path) {
-        try {
-            File f = new File(path);
-            if (!f.isFile() || !f.canRead()) return null;
-            try (BufferedReader reader = new BufferedReader(new FileReader(f))) {
-                String line = reader.readLine();
-                if (line == null) return null;
-                return Double.parseDouble(line.trim());
-            }
-        } catch (Throwable ignored) {
-            return null;
-        }
-    }
-
-    private static double readPowerProfileCapacityMah(Context context) {
-        try {
-            Class<?> clazz = Class.forName("com.android.internal.os.PowerProfile");
-            Constructor<?> ctor = clazz.getConstructor(Context.class);
-            Object profile = ctor.newInstance(context);
-            Method method = clazz.getMethod("getBatteryCapacity");
-            Object value = method.invoke(profile);
-            if (value instanceof Double) {
-                double mah = (Double) value;
-                if (mah >= 500.0 && mah <= 30000.0) return mah;
             }
         } catch (Throwable ignored) {}
-        return Double.NaN;
+
+        WifiRoamingTracker rt = WifiRoamingTracker.getInstance();
+        ws.roam1h = rt.getRoamCountLastHour();
+        ws.roamTotal = rt.getTotalRoamCount();
+        ws.lastRoam = rt.getLastTransition();
+        return ws;
     }
 
-    private static boolean isPositive(double value) {
-        return !Double.isNaN(value) && !Double.isInfinite(value) && value > 0;
+    public static String buildSnapshotJson(Context ctx, AgentConfig cfg) {
+        long nowSec = System.currentTimeMillis() / 1000L;
+        BatterySnapshot bs = readBattery(ctx, cfg);
+        RamStorageSnapshot rs = readRamStorage(ctx);
+        WifiSnapshot ws = readWifi(ctx);
+
+        JSONArray checks = new JSONArray();
+
+        // 1. Health_Battery
+        int batState = (bs.healthPct < 20.0 || ("Discharging".equals(bs.statusText) && bs.levelPct <= 10)) ? 2
+                : (bs.healthPct < 40.0 || ("Discharging".equals(bs.statusText) && bs.levelPct <= 20)) ? 1 : 0;
+        String batLbl = batState == 2 ? "CRITICAL" : batState == 1 ? "WARNING" : "OK";
+        addCheck(checks, batState, "Health_Battery",
+                String.format(Locale.US,
+                        "battery_level=%d%%|battery_health=%.1f%%|battery_cycles=%d|battery_temp=%.1f|battery_voltage=%.2f|battery_current=%d",
+                        bs.levelPct, bs.healthPct, bs.cycles, bs.tempC, bs.voltageV, bs.currentMa),
+                String.format(Locale.US,
+                        "Status : %s | Level : %d%% (%s) | Real Health : %.1f%% | Cycles : %d | Full Capacity : %.0f mAh | Design Spec : %.0f mAh | Current Charge : %.0f mAh | Temp : %.1f C | Voltage : %.2f V | Current : %d mA | Calculation : %s",
+                        batLbl, bs.levelPct, bs.statusText, bs.healthPct, bs.cycles,
+                        bs.estFullMah, bs.designMah, bs.estFullMah, bs.tempC, bs.voltageV, bs.currentMa, bs.calcMethod),
+                null, null);
+
+        // 2. Android_Info
+        String uptimeStr = formatUptime(SystemClock.elapsedRealtime() / 1000L);
+        String profile = (Build.MANUFACTURER + " " + Build.MODEL).trim();
+        addCheck(checks, 0, "Android_Info", "-",
+                String.format(Locale.US,
+                        "Status : OK | Manufacturer : %s | Model : %s | Profile : %s | Android : %s | SDK : %d | Uptime : %s",
+                        Build.MANUFACTURER, Build.MODEL, profile, Build.VERSION.RELEASE, Build.VERSION.SDK_INT, uptimeStr),
+                null, null);
+
+        // 3. WiFi_Status
+        int wifiState = "Disconnected".equals(ws.status) ? 1 : (ws.rssiDbm != 0 && ws.rssiDbm < -82 ? 1 : 0);
+        String wifiLbl = wifiState == 0 ? "OK" : "WARNING";
+        addCheck(checks, wifiState, "WiFi_Status",
+                String.format(Locale.US, "wifi_rssi=%ddBm|wifi_speed=%d|wifi_roam_1h=%d", ws.rssiDbm, ws.linkSpeedMbps, ws.roam1h),
+                String.format(Locale.US,
+                        "Status : %s | SSID : %s | AP BSSID : %s (%s) | Band : %s | Roaming : %dx/1h (Total %dx, Last %s) | Signal : %d dBm | Link Speed : %d Mbps | IP : %s",
+                        wifiLbl, ws.ssid, ws.bssid, ws.vendor, ws.bandChannel,
+                        ws.roam1h, ws.roamTotal, ws.lastRoam, ws.rssiDbm, ws.linkSpeedMbps, ws.ip),
+                null, null);
+
+        // 4. RAM_Usage (cached 1800s)
+        int ramState = rs.ramPct >= 95 ? 2 : rs.ramPct >= 85 ? 1 : 0;
+        String ramLbl = ramState == 2 ? "CRITICAL" : ramState == 1 ? "WARNING" : "OK";
+        addCheck(checks, ramState, "RAM_Usage",
+                String.format(Locale.US, "ram_used=%d%%;85;95", rs.ramPct),
+                String.format(Locale.US, "Status : %s | Used : %d%% (%.2f GB) | Free : %.2f GB | Total : %.2f GB",
+                        ramLbl, rs.ramPct, rs.ramUsedGb, rs.ramFreeGb, rs.ramTotalGb),
+                1800L, nowSec);
+
+        // 5. Storage_Usage (cached 86400s)
+        int stState = rs.storagePct >= 95 ? 2 : rs.storagePct >= 85 ? 1 : 0;
+        String stLbl = stState == 2 ? "CRITICAL" : stState == 1 ? "WARNING" : "OK";
+        addCheck(checks, stState, "Storage_Usage",
+                String.format(Locale.US, "storage_used=%d%%;85;95", rs.storagePct),
+                String.format(Locale.US, "Status : %s | Used : %d%% (%.2f GB) | Free : %.2f GB | Total : %.2f GB",
+                        stLbl, rs.storagePct, rs.storageUsedGb, rs.storageFreeGb, rs.storageTotalGb),
+                86400L, nowSec);
+
+        JSONObject root = new JSONObject();
+        try {
+            root.put("hostname", cfg.getHostname());
+            root.put("gateway_ip", cfg.getGatewayIp());
+            root.put("local_checks", checks);
+            root.put("raw_sections", getOrBuildInventory(ctx, rs, cfg));
+        } catch (Throwable ignored) {}
+        return root.toString();
     }
 
-    private static double bytesToGb(long bytes) {
-        return bytes / 1024.0 / 1024.0 / 1024.0;
+    private static void addCheck(JSONArray arr, int state, String name, String metrics, String summary, Long cacheTtl, Long cacheEpoch) {
+        try {
+            JSONObject o = new JSONObject();
+            o.put("state", state);
+            o.put("service_name", name);
+            o.put("metrics", metrics);
+            o.put("summary", summary);
+            if (cacheTtl != null && cacheEpoch != null) {
+                o.put("cache_ttl_sec", cacheTtl);
+                o.put("cache_epoch_sec", cacheEpoch);
+            }
+            arr.put(o);
+        } catch (Throwable ignored) {}
     }
 
-    private static String safe(String value) {
-        return value == null || value.trim().isEmpty() ? "Unknown" : value.trim();
+    private static synchronized JSONArray getOrBuildInventory(Context ctx, RamStorageSnapshot rs, AgentConfig cfg) {
+        long now = System.currentTimeMillis();
+        if (cachedInventorySections != null && (now - lastInventoryMillis) < 21_600_000L) {
+            return cachedInventorySections;
+        }
+        JSONArray arr = new JSONArray();
+        try {
+            addRaw(arr, "<<<lnx_uname>>>", Build.SUPPORTED_ABIS.length > 0 ? Build.SUPPORTED_ABIS[0] : "aarch64");
+            addRaw(arr, "<<<lnx_distro:sep(124)>>>",
+                    "Distributor ID|Android\nDescription|Android " + Build.VERSION.RELEASE + "\nRelease|" + Build.VERSION.RELEASE + "\nCodename|" + Build.VERSION.CODENAME);
+
+            String cpuinfo = readTextFile("/proc/cpuinfo");
+            if (!cpuinfo.isEmpty()) {
+                addRaw(arr, "<<<lnx_cpuinfo:sep(58)>>>", cpuinfo);
+            }
+
+            long ramMb = Math.round(rs.ramTotalGb * 1024.0);
+            String dmi = String.format(Locale.US,
+                    "System Information\n\tManufacturer: %s\n\tProduct Name: %s\n\tSerial Number: %s\nMemory Device\n\tSize: %d MB",
+                    Build.MANUFACTURER, Build.MODEL, cfg.getHostname(), ramMb);
+            addRaw(arr, "<<<dmidecode:sep(58)>>>", dmi);
+
+            long diskBytes = Math.round(rs.storageTotalGb * 1024.0 * 1024.0 * 1024.0);
+            addRaw(arr, "<<<lnx_block_devices:sep(0)>>>",
+                    "|mmcblk0|\nsize|" + diskBytes + "\ndevice/model|" + Build.MODEL);
+
+            PackageManager pm = ctx.getPackageManager();
+            List<PackageInfo> pkgs = pm.getInstalledPackages(0);
+            StringBuilder sb = new StringBuilder();
+            for (PackageInfo pi : pkgs) {
+                if (pi == null || pi.packageName == null) continue;
+                String ver = pi.versionName == null ? "0" : pi.versionName.replace("|", "_");
+                boolean isSys = pi.applicationInfo != null && (pi.applicationInfo.flags & ApplicationInfo.FLAG_SYSTEM) != 0;
+                String cat = isSys ? "system" : "android";
+                sb.append(pi.packageName).append('|').append(ver).append('|')
+                        .append(Build.SUPPORTED_ABIS.length > 0 ? Build.SUPPORTED_ABIS[0] : "arm64")
+                        .append('|').append(cat).append("|apk|Android Package\n");
+            }
+            if (sb.length() > 0) {
+                addRaw(arr, "<<<lnx_packages:sep(124)>>>", sb.toString());
+            }
+        } catch (Throwable ignored) {}
+
+        cachedInventorySections = arr;
+        lastInventoryMillis = now;
+        return arr;
     }
 
-    public static String fmt1(double value) {
-        return String.format(Locale.US, "%.1f", value);
+    private static void addRaw(JSONArray arr, String header, String body) {
+        try {
+            JSONObject o = new JSONObject();
+            o.put("header", header);
+            o.put("body", body);
+            arr.put(o);
+        } catch (Throwable ignored) {}
     }
 
-    public static String fmt2(double value) {
-        return String.format(Locale.US, "%.2f", value);
+    private static String readTextFile(String path) {
+        StringBuilder sb = new StringBuilder();
+        try (BufferedReader br = new BufferedReader(new FileReader(path))) {
+            String line;
+            while ((line = br.readLine()) != null) {
+                sb.append(line).append('\n');
+            }
+        } catch (Throwable ignored) {}
+        return sb.toString();
+    }
+
+    public static String formatUptime(long totalSec) {
+        long days = totalSec / 86400;
+        long hrs = (totalSec % 86400) / 3600;
+        long mins = (totalSec % 3600) / 60;
+        if (days > 0) return String.format(Locale.US, "%dd %dh %dm", days, hrs, mins);
+        if (hrs > 0) return String.format(Locale.US, "%dh %dm", hrs, mins);
+        return String.format(Locale.US, "%dm", mins);
     }
 }

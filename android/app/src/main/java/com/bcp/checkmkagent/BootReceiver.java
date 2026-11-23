@@ -8,15 +8,14 @@ import android.os.Build;
 public class BootReceiver extends BroadcastReceiver {
     @Override
     public void onReceive(Context context, Intent intent) {
-        if (!AgentConfig.isAutoStart(context)) return;
-        String action = intent == null ? null : intent.getAction();
+        String action = intent != null ? intent.getAction() : "";
         if (Intent.ACTION_BOOT_COMPLETED.equals(action)
-                || Intent.ACTION_MY_PACKAGE_REPLACED.equals(action)) {
-            Intent service = new Intent(context, CheckmkAgentService.class);
+                || "android.intent.action.QUICKBOOT_POWERON".equals(action)) {
+            Intent svc = new Intent(context, CheckmkAgentService.class);
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                context.startForegroundService(service);
+                context.startForegroundService(svc);
             } else {
-                context.startService(service);
+                context.startService(svc);
             }
         }
     }
