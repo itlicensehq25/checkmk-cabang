@@ -371,7 +371,7 @@ impl AgentConfig {
             return true;
         }
 
-        if self.network.allow_all_private && is_private_or_internal_ip(&clean) {
+        if self.network.allow_all_private {
             return true;
         }
 
@@ -529,15 +529,16 @@ mod tests {
         let mut cfg = AgentConfig::default();
         cfg.network.allowed_servers = "192.168.55.112".to_string();
         cfg.network.allow_all_private = true;
-        // NAT MikroTik depo tetap lolos
+        // Mode Open (allow_all_private = true) mengizinkan semua IP seperti agen bawaan Checkmk
         assert!(cfg.is_client_allowed("::ffff:192.168.108.1"));
         assert!(cfg.is_client_allowed("192.168.146.1"));
-        assert!(!cfg.is_client_allowed("1.2.3.4"));
+        assert!(cfg.is_client_allowed("192.100.1.190"));
 
         // Mode ketat jika allow_all_private dimatikan
         cfg.network.allow_all_private = false;
         assert!(cfg.is_client_allowed("192.168.55.112"));
         assert!(!cfg.is_client_allowed("192.168.108.1"));
+        assert!(!cfg.is_client_allowed("192.100.1.190"));
 
         // CIDR match
         cfg.network.allowed_servers = "192.168.55.0/24".to_string();

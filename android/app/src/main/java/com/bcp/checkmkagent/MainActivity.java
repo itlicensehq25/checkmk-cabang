@@ -373,13 +373,13 @@ public class MainActivity extends Activity {
         edtHostname = addSettingField(cSet.bodyLayout, "Hostname Checkmk", cfg.getHostname(), InputType.TYPE_CLASS_TEXT);
 
         swAllowPrivate = new Switch(this);
-        swAllowPrivate.setText("Izinkan semua IP Private/NAT/VPN (RFC1918 - sama seperti Linux/Windows)");
+        swAllowPrivate.setText("Izinkan semua IP (Open — sama seperti agen bawaan Checkmk)");
         swAllowPrivate.setTextColor(TEXT_PRIMARY);
         swAllowPrivate.setChecked(cfg.isAllowAllPrivate());
         swAllowPrivate.setPadding(0, dp(8), 0, dp(8));
         cSet.bodyLayout.addView(swAllowPrivate);
 
-        edtAllowed = addSettingField(cSet.bodyLayout, "IP Server Checkmk Cabang (kosong = bebas RFC1918)",
+        edtAllowed = addSettingField(cSet.bodyLayout, "IP Server Checkmk Cabang (kosong = semua IP jika Open aktif)",
                 cfg.getAllowedServersRaw(), InputType.TYPE_CLASS_TEXT);
         edtGateway = addSettingField(cSet.bodyLayout, "IP Gateway Cabang (Ping Monitor Baris ke-3)",
                 cfg.getConfiguredGatewayIp(), InputType.TYPE_CLASS_TEXT);
