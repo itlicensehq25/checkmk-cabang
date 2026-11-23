@@ -180,7 +180,45 @@ flowchart TD
 
 ---
 
-## 7. Cara Instalasi APK Android (`BMS agen 1.3.8 stabil dan debug`)
+## 7. Jadwal Scheduler / "Cronjob" Internal Android
+
+Android tidak menggunakan `cron` sistem seperti Linux. Sebagai gantinya, agen menjalankan **`ForegroundService` (`CheckmkAgentService.java`)** dengan `ScheduledExecutorService` (dilindungi `PARTIAL_WAKE_LOCK` + `WIFI_MODE_FULL_HIGH_PERF` + `BootReceiver` auto-start saat *reboot*):
+
+| Tugas / Job | Mekanisme & Lokasi Kode | Interval Eksekusi | Cache / Retensi | Keterangan |
+| :--- | :--- | :--- | :--- | :--- |
+| **Siklus Utama Telemetri & Config** | `CheckmkAgentService.java` (`scheduleAtFixedRate`) | **Setiap 60 detik** (1 menit) | Real-time | Sinkronisasi `AgentConfig` ke Rust, membaca `Health_Battery`, `WiFi_Status` (+ deteksi roaming AP), `Android_Info`, `RAM_Usage`, dan `Storage_Usage`. |
+| **Ping Paralel 3 Target (4x/menit)** | `NativeBridge.collectPingSample` -> `ping.rs` (`std::thread::scope`) | **Setiap 60 detik** (4 paket/target, timeout 2 dtk) | Buffer **1 jam** (60 sampel = 240 pkt/target) | Menjalankan `/system/bin/ping -c 4 -W 2` secara paralel ke `192.168.122.10`, `8.8.8.8`, dan `Gateway Cabang`. |
+| **Rotasi & Pembersihan Log Ping (CCTV 30 Hari)** | `ping.rs` (`prune_log_if_due`) | **Setiap 1 jam** (3.600 detik) | **30 hari** atau batas **35 MB** (`ping_history.log`) | Otomatis membuang baris log yang lebih tua dari 30 hari atau saat ukuran file melebihi 35 MB. |
+| **Cache `RAM_Usage`** | `DeviceMetrics.java` (`<<<local:cached(...,1800)>>>`) | Evaluasi 1 menit, *cache* Checkmk **30 menit** (1.800 dtk) | 30 menit | Mengurangi fluktuasi palsu pemakaian RAM di sisi server Checkmk. |
+| **Cache `Transport_Status`** | `cmkagent-android-jni/src/lib.rs` | *Cache* Checkmk **3 jam** (10.800 dtk) | 3 jam | Melaporkan status mode Hybrid Pull + Push HTTP(S). |
+| **Cache `HW/SW Inventory` (APK, CPU, DMI)** | `DeviceMetrics.java` (`getOrBuildInventory`) | **Setiap 6 jam** (21.600 dtk) | 6 jam di memori | Membaca `PackageManager.getInstalledPackages`, `/proc/cpuinfo`, `dmidecode`, dan `mmcblk0` agar tidak membebani CPU/baterai tiap menit. |
+| **Cache `Storage_Usage`** | `DeviceMetrics.java` (`<<<local:cached(...,86400)>>>`) | *Cache* Checkmk **24 jam** (86.400 dtk) | 24 jam | Melaporkan kapasitas penyimpanan internal `/data`. |
+| **HTTP(S) Push Backup *(Opsional)*** | `CheckmkAgentService.java` -> `PushClient.java` | Default **Setiap 5 menit** (300 dtk) | Nonaktif secara default | Hanya berjalan jika fitur Push Backup diaktifkan & URL receiver diisi. |
+| **Refresh Tampilan UI Dashboard** | `MainActivity.java` (`Handler`) | **Setiap 3 detik** (hanya saat layar aplikasi dibuka) | — | Berhenti otomatis saat aplikasi di-minimize (`onPause`) agar hemat baterai. |
+
+---
+
+## 8. Matriks Standardisasi Threshold & Alerting Khusus Android
+
+| Service Checkmk | Tipe / Cache | Metrik (Perfdata) | **OK (0)** | **WARNING (1)** | **CRITICAL (2)** |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| **`Agent_Status`** | Real-time (60s) | `connections`, `rejected` | Agen aktif & menerima Pull TCP `6556` | — *(tidak pernah WARN)* | — *(jika agen mati, Checkmk aktifkan CRIT pada `Check_MK` timeout)* |
+| **`Android_Info`** | Real-time (60s) | `-` | Selalu **OK** (model, OS, SDK, uptime) | — | — |
+| **`Health_Battery`** | Real-time (60s) | `battery_level`, `battery_health`, `battery_cycles`, `battery_temp`, `battery_voltage`, `battery_current` | `Real Health >= 40%` **dan** (Charging/Full **atau** `Level > 20%`) | `Real Health < 40%` **atau** (`Discharging` & `Level <= 20%`) | `Real Health < 20%` **atau** (`Discharging` & `Level <= 10%`) |
+| **`WiFi_Status`** | Real-time (60s) | `wifi_rssi`, `wifi_speed`, `wifi_roam_1h` | Terhubung Wi-Fi **dan** sinyal `RSSI >= -82 dBm` | Wi-Fi `Disconnected` **atau** sinyal lemah `RSSI < -82 dBm` | — *(tidak pernah CRIT)* |
+| **`RAM_Usage`** | Cached **30 mnt** | `ram_used` (`%;85;95`) | Pemakaian RAM `< 85%` | Pemakaian RAM `>= 85%` dan `< 95%` | Pemakaian RAM `>= 95%` |
+| **`Storage_Usage`** | Cached **24 jam** | `storage_used` (`%;85;95`) | Pemakaian Storage `< 85%` | Pemakaian Storage `>= 85%` dan `< 95%` | Pemakaian Storage `>= 95%` |
+| **`Ping_Gateway`** *(Gateway Cabang)* | Ping 4x/1m, report **1 jam** | `rta`, `pl` (`20/50%`), `rtmin`, `rtmax`, `ping_loss_1m` (`25/100%`) | `Loss 1h < 20%` **dan** `Avg RTT < 50 ms` | `Loss 1h >= 20%` **atau** `Avg RTT >= 50 ms` | `Total RX = 0` **atau** `Loss 1h >= 50%` **atau** `Avg RTT >= 150 ms` |
+| **`Ping_192.168.122.10`** *(Server Lokal)* | Ping 4x/1m, report **1 jam** | `rta`, `pl` (`20/50%`), `rtmin`, `rtmax`, `ping_loss_1m` (`25/100%`) | `Loss 1h < 20%` **dan** `Avg RTT < 100 ms` | `Loss 1h >= 20%` **atau** `Avg RTT >= 100 ms` | `Total RX = 0` **atau** `Loss 1h >= 50%` **atau** `Avg RTT >= 250 ms` |
+| **`Ping_8.8.8.8`** *(Internet)* | Ping 4x/1m, report **1 jam** | `rta`, `pl` (`20/50%`), `rtmin`, `rtmax`, `ping_loss_1m` (`25/100%`) | `Loss 1h < 20%` **dan** `Avg RTT < 150 ms` | `Loss 1h >= 20%` **atau** `Avg RTT >= 150 ms` | `Total RX = 0` **atau** `Loss 1h >= 50%` **atau** `Avg RTT >= 300 ms` |
+| **`Transport_Status`** | Cached **3 jam** | `push_success`, `push_failure` | Push tidak aktif **atau** Push terakhir sukses tanpa error | Push aktif **dan** pengiriman Push terakhir gagal (ada `last_push_error`) | — *(tidak pernah CRIT karena Pull tetap primary)* |
+| **`Check_MK HW/SW Inventory`** | Active Check (cache 6 jam di agen) | — | Seluruh section (`lnx_uname`, `lnx_distro`, `lnx_cpuinfo`, `dmidecode`, `lnx_block_devices`, `lnx_packages`) ter-parse valid | Gagal parsing salah satu section | — |
+
+> **Catatan Grafik `ping_loss_1m`:** Pada seluruh service `Ping_*`, status alert (`OK/WARN/CRIT`) dihitung dari **rata-rata 1 jam (`pl` & `rta`)** agar tidak *flapping* saat PDA berpindah Access Point sesaat, sedangkan metrik **`ping_loss_1m`** (`0%–100%`, garis referensi WARN `25%` / CRIT `100%`) direkam setiap menit khusus untuk visualisasi grafik koneksi putus secara *real-time* beserta rincian durasi putus 24 jam terakhir.
+
+---
+
+## 9. Cara Instalasi APK Android (`BMS agen 1.3.8 stabil dan debug`)
 
 ### A. Mengunduh APK
 Unduh berkas APK dari halaman **GitHub Releases** (`BMS agen 1.3.8 stabil dan debug`) atau dari **GitHub Actions Artifacts** (`BMS-agen-1.3.8-stabil-dan-debug`):
@@ -205,7 +243,7 @@ Unduh berkas APK dari halaman **GitHub Releases** (`BMS agen 1.3.8 stabil dan de
 
 ---
 
-## 8. Cara Penggunaan & Konfigurasi
+## 10. Cara Penggunaan & Konfigurasi
 
 ### A. Pengaturan pada Aplikasi Android (Kartu `SETTINGS`)
 Buka aplikasi **BMS Agent**, lalu ketuk kartu **SETTINGS** untuk membuka formulir konfigurasi:
@@ -248,7 +286,7 @@ Hostname: <HOSTNAME_PDA>
 
 ---
 
-## 9. Cara Build APK Android dari Source Code (Untuk Developer)
+## 11. Cara Build APK Android dari Source Code (Untuk Developer)
 
 ```bash
 # 1. Jalankan unit test mesin inti Rust
