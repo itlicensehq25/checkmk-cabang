@@ -3,264 +3,101 @@ package com.bcp.checkmkagent;
 import android.content.Context;
 import android.content.SharedPreferences;
 
-import java.util.ArrayList;
-import java.util.Collections;
-import java.util.List;
 import java.util.Locale;
 
-/**
- * Tracks real battery charging cycles and full-charge capacity (2946 mAh @ 100% on Newland MT93).
- * Captures charge deltas continuously via BroadcastReceiver and periodic background checks,
- * even when the device transitions to Full or charges while idle.
- */
-public final class BatteryHistory {
-    private static final String PREFS = "cmkagent_accumeter_v2";
+public class BatteryHistory {
+    private static final String PREFS_NAME = "cmk_battery_history_v2";
+    private static final String KEY_FIRST_SEEN = "first_seen_ms";
+    private static final String KEY_ACCUMULATED_CHARGE_PCT = "accumulated_charge_pct";
+    private static final String KEY_LAST_LEVEL_SEEN = "last_level_seen";
+    private static final String KEY_ESTIMATED_CYCLES = "estimated_cycles";
+    private static final String KEY_FULL_DESIGN_MAH = "full_design_mah";
+    private static final String KEY_LAST_VALID_CC_MAH = "last_valid_cc_mah";
+    private static final String KEY_EST_FULL_CAP_MAH = "est_full_cap_mah";
+    private static final String KEY_CAP_CALC_METHOD = "cap_calc_method";
 
-    private static final String K_SAMPLES = "accumeter_capacity_samples";
-    private static final String K_CALIBRATED_FULL_MAH = "calibrated_full_mah";
-    private static final String K_CALIBRATED_FULL_VOLT = "calibrated_full_volt";
-    private static final String K_CALIBRATED_TIMESTAMP = "calibrated_timestamp";
+    private static final int CYCLES_UNSET = -1;
+    private final SharedPreferences prefs;
 
-    private static final String K_IS_CHARGING = "active_is_charging";
-    private static final String K_SESSION_START_LEVEL = "active_start_level";
-    private static final String K_SESSION_START_MAH = "active_start_mah";
-    private static final String K_SESSION_LAST_LEVEL = "active_last_level";
-    private static final String K_SESSION_LAST_MAH = "active_last_mah";
-    private static final String K_SESSION_COUNTED = "active_session_counted";
+    public static class BatteryData {
+        public double estFullCapMah;
+        public String calcMethod;
+        public int estimatedCycles;
+        public int daysMonitored;
+        public double designCapMah;
+        public double healthPercent;
+    }
 
-    // Continuous observation keys (catches charging even if plugged/unplugged between polls)
-    private static final String K_LAST_OBSERVED_LEVEL = "last_observed_level";
-    private static final String K_LAST_OBSERVED_MAH = "last_observed_mah";
+    public BatteryHistory(Context ctx) {
+        this.prefs = ctx.getApplicationContext().getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE);
+        if (!prefs.contains(KEY_FIRST_SEEN)) {
+            prefs.edit().putLong(KEY_FIRST_SEEN, System.currentTimeMillis()).apply();
+        }
+    }
 
-    // Accumulated charged mAh and discrete charge session counter for Android 11 / MT93
-    private static final String K_ACCUMULATED_CHARGED_MAH = "accumulated_charged_mah";
-    private static final String K_CHARGE_SESSION_COUNT = "charge_session_count";
-
-    private static final int MAX_SESSIONS = 15;
-    private static final int MIN_CHARGE_DELTA_PERCENT = 15;
-
-    private BatteryHistory() {}
-
-    public static synchronized void updateChargeSession(
-            Context context, int level, String status, boolean isPlugged,
-            double chargeCounterMah, double voltageV, double fullScaleMah) {
-        if (context == null || level < 0) return;
-
-        double refScale = fullScaleMah > 500.0 ? fullScaleMah : 2946.0;
-        double effectiveMah = (!Double.isNaN(chargeCounterMah) && chargeCounterMah > 0)
-                ? chargeCounterMah
-                : (refScale * (level / 100.0));
-
-        SharedPreferences prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE);
+    public synchronized void recordSample(Context ctx, int levelPct, boolean isCharging, int chargeCounterUah, double designCapMah, int sysCycles) {
         SharedPreferences.Editor ed = prefs.edit();
-
-        boolean isChargingState = isPlugged
-                || "Charging".equalsIgnoreCase(status)
-                || "Full".equalsIgnoreCase(status);
-        boolean wasCharging = prefs.getBoolean(K_IS_CHARGING, false);
-
-        // 1. Calibrate full capacity when at 100% or Full
-        if ((level == 100 || "Full".equalsIgnoreCase(status)) && effectiveMah > 1500.0) {
-            ed.putFloat(K_CALIBRATED_FULL_MAH, (float) effectiveMah);
-            if (!Double.isNaN(voltageV) && voltageV > 0) {
-                ed.putFloat(K_CALIBRATED_FULL_VOLT, (float) voltageV);
-            }
-            ed.putLong(K_CALIBRATED_TIMESTAMP, System.currentTimeMillis());
+        if (designCapMah > 500) {
+            ed.putFloat(KEY_FULL_DESIGN_MAH, (float) designCapMah);
         }
 
-        // 2. Catch any upward jump in mAh or battery level (even if charged while asleep/rebooted)
-        int prevObsLevel = prefs.getInt(K_LAST_OBSERVED_LEVEL, -1);
-        float prevObsMah = prefs.getFloat(K_LAST_OBSERVED_MAH, -1f);
-        float totalAccumulatedMah = prefs.getFloat(K_ACCUMULATED_CHARGED_MAH, 0f);
-        int chargeSessionCount = prefs.getInt(K_CHARGE_SESSION_COUNT, 0);
+        int lastLevel = prefs.getInt(KEY_LAST_LEVEL_SEEN, -1);
+        double accPct = prefs.getFloat(KEY_ACCUMULATED_CHARGE_PCT, 0f);
+        if (lastLevel >= 0 && isCharging && levelPct > lastLevel) {
+            int delta = levelPct - lastLevel;
+            if (delta > 0 && delta <= 40) {
+                accPct += delta;
+                ed.putFloat(KEY_ACCUMULATED_CHARGE_PCT, (float) accPct);
+            }
+        }
+        ed.putInt(KEY_LAST_LEVEL_SEEN, levelPct);
 
-        if (prevObsMah > 0f && effectiveMah > prevObsMah) {
-            double deltaMah = effectiveMah - prevObsMah;
-            int deltaLvl = prevObsLevel >= 0 ? (level - prevObsLevel) : 0;
-            // Filter out tiny coulomb counter jitter (< 8 mAh when not charging and level didn't rise)
-            if (deltaMah >= 8.0 || (isChargingState && deltaMah > 0.0) || deltaLvl >= 1) {
-                if (deltaMah <= refScale * 1.5) {
-                    totalAccumulatedMah += (float) deltaMah;
-                    ed.putFloat(K_ACCUMULATED_CHARGED_MAH, totalAccumulatedMah);
+        double ccMah = chargeCounterUah > 0 ? (chargeCounterUah / 1000.0) : 0.0;
+        if (ccMah > 100) {
+            ed.putFloat(KEY_LAST_VALID_CC_MAH, (float) ccMah);
+            if (levelPct >= 99 && ccMah <= designCapMah * 1.15) {
+                ed.putFloat(KEY_EST_FULL_CAP_MAH, (float) ccMah);
+                ed.putString(KEY_CAP_CALC_METHOD, String.format(Locale.US, "100%% Full Charge (%.0f / %.0f mAh)", ccMah, ccMah));
+            } else if (levelPct >= 35 && !prefs.contains(KEY_EST_FULL_CAP_MAH)) {
+                double est = (ccMah * 100.0) / levelPct;
+                if (est > designCapMah * 0.4 && est <= designCapMah * 1.1) {
+                    ed.putFloat(KEY_EST_FULL_CAP_MAH, (float) est);
+                    ed.putString(KEY_CAP_CALC_METHOD, String.format(Locale.US, "Extrapolated @ %d%%", levelPct));
                 }
             }
-            // If battery jumped up by >= 5% while not tracked in an active session (e.g. charged while off)
-            if (!wasCharging && !isChargingState && deltaLvl >= 5) {
-                chargeSessionCount++;
-                ed.putInt(K_CHARGE_SESSION_COUNT, chargeSessionCount);
-            }
         }
-
-        ed.putInt(K_LAST_OBSERVED_LEVEL, level);
-        ed.putFloat(K_LAST_OBSERVED_MAH, (float) effectiveMah);
-
-        // 3. Active charging session state machine
-        if (isChargingState && !wasCharging) {
-            int startLevel = (prevObsLevel >= 0 && prevObsLevel < level) ? prevObsLevel : level;
-            double startMah = (prevObsMah > 0f && prevObsMah < effectiveMah) ? prevObsMah : effectiveMah;
-            boolean counted = false;
-
-            if ((level - startLevel) >= 5 || ((level == 100 || "Full".equalsIgnoreCase(status)) && startLevel < 98)) {
-                chargeSessionCount++;
-                ed.putInt(K_CHARGE_SESSION_COUNT, chargeSessionCount);
-                counted = true;
-            }
-
-            ed.putBoolean(K_IS_CHARGING, true);
-            ed.putInt(K_SESSION_START_LEVEL, startLevel);
-            ed.putFloat(K_SESSION_START_MAH, (float) startMah);
-            ed.putInt(K_SESSION_LAST_LEVEL, level);
-            ed.putFloat(K_SESSION_LAST_MAH, (float) effectiveMah);
-            ed.putBoolean(K_SESSION_COUNTED, counted);
-            ed.apply();
-            return;
+        if (sysCycles >= 0) {
+            ed.putInt(KEY_ESTIMATED_CYCLES, sysCycles);
         }
-
-        if (isChargingState && wasCharging) {
-            int startLevel = prefs.getInt(K_SESSION_START_LEVEL, level);
-            boolean counted = prefs.getBoolean(K_SESSION_COUNTED, false);
-
-            // If battery discharged slightly while still plugged in, update minimum start level
-            if (level < startLevel) {
-                startLevel = level;
-                ed.putInt(K_SESSION_START_LEVEL, startLevel);
-                ed.putFloat(K_SESSION_START_MAH, (float) effectiveMah);
-            }
-
-            int gainedLevel = level - startLevel;
-            if (!counted && (gainedLevel >= 5 || ((level == 100 || "Full".equalsIgnoreCase(status)) && startLevel < 98))) {
-                chargeSessionCount++;
-                ed.putInt(K_CHARGE_SESSION_COUNT, chargeSessionCount);
-                ed.putBoolean(K_SESSION_COUNTED, true);
-            }
-
-            ed.putInt(K_SESSION_LAST_LEVEL, level);
-            ed.putFloat(K_SESSION_LAST_MAH, (float) effectiveMah);
-            ed.apply();
-            return;
-        }
-
-        if (!isChargingState && wasCharging) {
-            int startLevel = prefs.getInt(K_SESSION_START_LEVEL, -1);
-            int lastLevel = Math.max(level, prefs.getInt(K_SESSION_LAST_LEVEL, level));
-            double startMah = prefs.getFloat(K_SESSION_START_MAH, -1f);
-            double lastMah = Math.max(effectiveMah, prefs.getFloat(K_SESSION_LAST_MAH, (float) effectiveMah));
-            boolean counted = prefs.getBoolean(K_SESSION_COUNTED, false);
-
-            int deltaLevel = lastLevel - startLevel;
-            double deltaMah = lastMah - startMah;
-
-            if (!counted && (deltaLevel >= 3 || deltaMah >= (refScale * 0.03))) {
-                chargeSessionCount++;
-                ed.putInt(K_CHARGE_SESSION_COUNT, chargeSessionCount);
-            }
-
-            if (deltaLevel >= MIN_CHARGE_DELTA_PERCENT && deltaMah > 0) {
-                double estimatedSessionFull = (deltaMah / (deltaLevel / 100.0));
-                if (estimatedSessionFull >= 800.0 && estimatedSessionFull <= 25000.0) {
-                    addSessionSample(prefs, estimatedSessionFull);
-                }
-            }
-
-            ed.putBoolean(K_IS_CHARGING, false);
-            ed.putBoolean(K_SESSION_COUNTED, false);
-            ed.remove(K_SESSION_START_LEVEL);
-            ed.remove(K_SESSION_START_MAH);
-            ed.apply();
-            return;
-        }
-
         ed.apply();
     }
 
-    public static int getEstimatedCycles(Context context, double referenceCapacityMah) {
-        if (context == null) return 0;
-        double ref = referenceCapacityMah > 500.0 ? referenceCapacityMah : 2946.0;
-        SharedPreferences prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE);
-        double totalCharged = prefs.getFloat(K_ACCUMULATED_CHARGED_MAH, 0f);
-        int sessions = prefs.getInt(K_CHARGE_SESSION_COUNT, 0);
+    public BatteryData getStats(AgentConfig cfg, double currentDesignMah) {
+        BatteryData d = new BatteryData();
+        d.designCapMah = currentDesignMah > 500 ? currentDesignMah : prefs.getFloat(KEY_FULL_DESIGN_MAH, 4800f);
 
-        int eqCycles = totalCharged > 0 ? (int) Math.ceil(totalCharged / ref) : 0;
-        int cycles = Math.max(eqCycles, sessions);
-        int manualBase = AgentConfig.getInitialCycleCount(context);
-        return manualBase + cycles;
-    }
-
-    public static double getAccumulatedChargedMah(Context context) {
-        if (context == null) return 0.0;
-        return context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
-                .getFloat(K_ACCUMULATED_CHARGED_MAH, 0f);
-    }
-
-    public static int getChargeSessionCount(Context context) {
-        if (context == null) return 0;
-        return context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
-                .getInt(K_CHARGE_SESSION_COUNT, 0);
-    }
-
-    private static void addSessionSample(SharedPreferences prefs, double capacity) {
-        List<Double> samples = parseSamples(prefs.getString(K_SAMPLES, ""));
-        samples.add(capacity);
-        while (samples.size() > MAX_SESSIONS) {
-            samples.remove(0);
+        float estFull = prefs.getFloat(KEY_EST_FULL_CAP_MAH, 0f);
+        if (estFull > 500) {
+            d.estFullCapMah = estFull;
+            d.calcMethod = prefs.getString(KEY_CAP_CALC_METHOD, "Calibrated");
+        } else {
+            float lastCc = prefs.getFloat(KEY_LAST_VALID_CC_MAH, 0f);
+            d.estFullCapMah = lastCc > 500 ? lastCc : d.designCapMah;
+            d.calcMethod = "Estimasi awal";
         }
 
-        StringBuilder sb = new StringBuilder();
-        for (double s : samples) {
-            if (sb.length() > 0) sb.append(',');
-            sb.append(String.format(Locale.US, "%.1f", s));
+        int savedCycles = prefs.getInt(KEY_ESTIMATED_CYCLES, CYCLES_UNSET);
+        int baseCycles = cfg.getInitialBatteryCycles();
+        double accCycles = prefs.getFloat(KEY_ACCUMULATED_CHARGE_PCT, 0f) / 100.0;
+        if (savedCycles >= 0) {
+            d.estimatedCycles = savedCycles + baseCycles;
+        } else {
+            d.estimatedCycles = baseCycles + (int) Math.round(accCycles);
         }
-        prefs.edit().putString(K_SAMPLES, sb.toString()).apply();
-    }
 
-    public static double getMedianCapacity(Context context) {
-        if (context == null) return Double.NaN;
-        SharedPreferences prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE);
-        List<Double> samples = parseSamples(prefs.getString(K_SAMPLES, ""));
-        if (samples.isEmpty()) return Double.NaN;
-
-        List<Double> sorted = new ArrayList<>(samples);
-        Collections.sort(sorted);
-        int n = sorted.size();
-        if (n % 2 == 1) return sorted.get(n / 2);
-        return (sorted.get(n / 2 - 1) + sorted.get(n / 2)) / 2.0;
-    }
-
-    public static int getSampleCount(Context context) {
-        if (context == null) return 0;
-        SharedPreferences prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE);
-        return parseSamples(prefs.getString(K_SAMPLES, "")).size();
-    }
-
-    public static double getCalibratedFullChargeMah(Context context) {
-        if (context == null) return Double.NaN;
-        float val = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
-                .getFloat(K_CALIBRATED_FULL_MAH, -1f);
-        return val > 1500.0f ? val : Double.NaN;
-    }
-
-    public static double getCalibratedFullVoltage(Context context) {
-        if (context == null) return Double.NaN;
-        float val = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
-                .getFloat(K_CALIBRATED_FULL_VOLT, -1f);
-        return val > 0 ? val : Double.NaN;
-    }
-
-    private static List<Double> parseSamples(String raw) {
-        List<Double> result = new ArrayList<>();
-        if (raw == null || raw.trim().isEmpty()) return result;
-        for (String token : raw.split(",")) {
-            try {
-                double val = Double.parseDouble(token.trim());
-                if (val > 0) result.add(val);
-            } catch (Exception ignored) {}
-        }
-        return result;
-    }
-
-    public static void clear(Context context) {
-        if (context != null) {
-            context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit().clear().apply();
-        }
+        long firstSeen = prefs.getLong(KEY_FIRST_SEEN, System.currentTimeMillis());
+        d.daysMonitored = (int) Math.max(0, (System.currentTimeMillis() - firstSeen) / 86400000L);
+        d.healthPercent = d.designCapMah > 0 ? Math.min(100.0, (d.estFullCapMah / d.designCapMah) * 100.0) : 100.0;
+        return d;
     }
 }

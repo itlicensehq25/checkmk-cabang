@@ -1,1 +1,4 @@
-# MVP cmkagent: no custom ProGuard rules required yet.
+-keep class com.bcp.checkmkagent.NativeBridge { *; }
+-keepclassmembers class com.bcp.checkmkagent.NativeBridge {
+    <methods>;
+}

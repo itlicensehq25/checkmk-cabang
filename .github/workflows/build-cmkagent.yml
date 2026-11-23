@@ -1,4 +1,4 @@
-name: Build cmkagent APK
+name: Build BMS agen 1.3.8 stabil dan debug (Android APK)
 
 on:
   workflow_dispatch:
@@ -6,12 +6,16 @@ on:
     paths:
       - 'android/**'
       - '.github/workflows/build-cmkagent.yml'
+  pull_request:
+    paths:
+      - 'android/**'
+      - '.github/workflows/build-cmkagent.yml'
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
-  build-debug-apk:
+  build-android-apk:
     runs-on: ubuntu-latest
 
     steps:
@@ -24,28 +28,46 @@ jobs:
           distribution: temurin
           java-version: '17'
 
-      - name: Locate sdkmanager
-        id: sdk
+      - name: Set up Rust & Android NDK targets
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-linux-android,armv7-linux-androideabi,x86_64-linux-android
+
+      - name: Run Rust core unit tests
+        run: cargo test --manifest-path android/rust/Cargo.toml -p cmkagent-core
+
+      - name: Install cargo-ndk & locate Android NDK
         shell: bash
         run: |
-          echo "ANDROID_SDK_ROOT=$ANDROID_SDK_ROOT"
-          SDKMANAGER="$(find "$ANDROID_SDK_ROOT/cmdline-tools" -type f -name sdkmanager | head -n 1)"
+          cargo install cargo-ndk --locked
+          echo "ANDROID_NDK_HOME=$ANDROID_HOME/ndk/$(ls -1 $ANDROID_HOME/ndk | tail -n 1)" >> "$GITHUB_ENV"
+
+      - name: Build Rust JNI libraries (.so)
+        working-directory: android/rust
+        shell: bash
+        run: |
+          mkdir -p ../app/src/main/jniLibs
+          cargo ndk \
+            -t arm64-v8a \
+            -t armeabi-v7a \
+            -t x86_64 \
+            -o ../app/src/main/jniLibs \
+            build -p cmkagent-android-jni --release
+
+      - name: Locate sdkmanager & install Android SDK 35
+        shell: bash
+        run: |
+          SDK_ROOT="${ANDROID_SDK_ROOT:-$ANDROID_HOME}"
+          SDKMANAGER="$(find "$SDK_ROOT/cmdline-tools" -type f -name sdkmanager | head -n 1)"
+          if [ -z "$SDKMANAGER" ]; then
+            SDKMANAGER="$(find "$SDK_ROOT" -maxdepth 4 -type f -name sdkmanager | head -n 1)"
+          fi
           if [ -z "$SDKMANAGER" ]; then
             echo "sdkmanager not found"
-            find "$ANDROID_SDK_ROOT" -maxdepth 4 -type f -name sdkmanager || true
             exit 1
           fi
-          echo "Found sdkmanager: $SDKMANAGER"
-          echo "sdkmanager=$SDKMANAGER" >> "$GITHUB_OUTPUT"
-
-      - name: Accept Android SDK licenses
-        shell: bash
-        run: yes | "${{ steps.sdk.outputs.sdkmanager }}" --licenses || true
-
-      - name: Install Android SDK 35
-        shell: bash
-        run: |
-          "${{ steps.sdk.outputs.sdkmanager }}" \
+          yes | "$SDKMANAGER" --licenses >/dev/null 2>&1 || true
+          "$SDKMANAGER" \
             "platform-tools" \
             "platforms;android-35" \
             "build-tools;35.0.0"
@@ -55,7 +77,7 @@ jobs:
         with:
           gradle-version: '8.9'
 
-      - name: Ensure Valid Signing Keystore
+      - name: Verify permanent signing keystore
         shell: bash
         run: |
           if ! keytool -list -keystore android/app/cmkagent.keystore -storepass android >/dev/null 2>&1; then
@@ -70,23 +92,66 @@ jobs:
               -keyalg RSA \
               -keysize 2048 \
               -validity 10000 \
-              -dname "CN=cmkagent, OU=IT, O=BCP, L=Kediri, ST=EastJava, C=ID"
+              -dname "CN=cmkagent, OU=IT OPS, O=BCP, L=Kediri, S=East Java, C=ID"
           else
-            echo "Keystore valid ditemukan."
+            echo "Keystore permanen valid ditemukan di android/app/cmkagent.keystore."
           fi
 
-      - name: Build cmkagent debug APK
+      - name: Build BMS agen 1.3.8 stabil (release) & debug APKs
         working-directory: android
-        run: gradle --no-daemon :app:assembleDebug
-
-      - name: Rename APK
+        shell: bash
         run: |
-          cp android/app/build/outputs/apk/debug/app-debug.apk \
-             android/cmkagent-v1.3.7.apk
+          set +e
+          gradle --no-daemon :app:assembleRelease :app:assembleDebug > gradle_build.log 2>&1
+          RC=$?
+          cat gradle_build.log
+          if [ $RC -ne 0 ]; then
+            ERR_MSG="$(grep -E '(error:|FAILURE:|What went wrong|> )' gradle_build.log | head -n 10 | tr '\n' ' ')"
+            echo "::error title=GradleBuildAndroid::${ERR_MSG}"
+            exit $RC
+          fi
+
+      - name: Stage APK outputs & SHA256SUMS
+        shell: bash
+        run: |
+          mkdir -p dist
+          cp android/app/build/outputs/apk/release/app-release.apk "dist/BMS-agen-1.3.8-stabil.apk"
+          cp android/app/build/outputs/apk/debug/app-debug.apk "dist/BMS-agen-1.3.8-debug.apk"
+          (cd dist && sha256sum *.apk > SHA256SUMS.txt && cat SHA256SUMS.txt)
 
       - name: Upload Artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: cmkagent-v1.3.7
+          name: BMS-agen-1.3.8-stabil-dan-debug
           path: |
-            android/cmkagent-v1.3.7.apk
+            dist/BMS-agen-1.3.8-stabil.apk
+            dist/BMS-agen-1.3.8-debug.apk
+            dist/SHA256SUMS.txt
+
+      - name: Publish GitHub Release (BMS agen 1.3.8 stabil dan debug)
+        if: (github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master')) || github.event_name == 'workflow_dispatch'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: bms-agen-1.3.8
+          name: "BMS agen 1.3.8 stabil dan debug"
+          overwrite_files: true
+          make_latest: "true"
+          body: |
+            ## BMS agen 1.3.8 stabil dan debug (Android Hybrid Java + Rust JNI)
+
+            ### Varian APK
+            - **`BMS-agen-1.3.8-stabil.apk`** (`com.bcp.checkmkagent`) — Varian produksi/stabil untuk PDA gudang (Newland MT93) & perangkat Android operasional cabang.
+            - **`BMS-agen-1.3.8-debug.apk`** (`com.bcp.checkmkagent.debug`) — Varian debug/testing yang dapat diinstal berdampingan dengan versi stabil tanpa bentrok paket.
+
+            ### Perubahan Utama v1.3.8
+            - Arsitektur **Hybrid Java 17 + Rust JNI (`libcmkagent_jni.so`)** untuk `arm64-v8a`, `armeabi-v7a`, dan `x86_64`.
+            - **Grafik real-time `ping_loss_1m` (`0%–100%`)** di Checkmk untuk `Ping_8.8.8.8`, `Ping_192.168.122.10`, dan `Ping_Gateway` + daftar durasi putus 24 jam terakhir (*terbaru dulu*).
+            - **Perbaikan deteksi Wi-Fi SSID, BSSID, & Vendor AP di Android 12–16** + tombol izin lokasi langsung di kartu Network.
+            - **Keystore permanen** (`android/app/cmkagent.keystore`) & `versionCode` otomatis naik di setiap build CI agar update APK selanjutnya tidak lagi mengalami bentrok tanda tangan (*package conflict*).
+            - **Cache `last_detected_gateway_ip`** sehingga `Ping_Gateway` tetap mencatat 100% loss saat Wi-Fi terputus.
+
+            Lihat panduan lengkap arsitektur, instalasi, dan penggunaan di `README-ANDROID.md`.
+          files: |
+            dist/BMS-agen-1.3.8-stabil.apk
+            dist/BMS-agen-1.3.8-debug.apk
+            dist/SHA256SUMS.txt

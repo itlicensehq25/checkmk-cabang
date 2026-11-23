@@ -5,963 +5,845 @@ import android.app.Activity;
 import android.app.AlertDialog;
 import android.content.Intent;
 import android.content.pm.PackageManager;
-import android.content.res.ColorStateList;
 import android.graphics.Color;
 import android.graphics.Typeface;
 import android.graphics.drawable.GradientDrawable;
-import android.location.LocationManager;
 import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
-import android.os.PowerManager;
+import android.os.Handler;
+import android.os.Looper;
+import android.os.SystemClock;
 import android.provider.Settings;
 import android.text.InputType;
 import android.view.Gravity;
 import android.view.View;
-import android.view.ViewGroup;
 import android.widget.Button;
-import android.widget.CheckBox;
 import android.widget.EditText;
 import android.widget.ImageView;
 import android.widget.LinearLayout;
-import android.widget.ProgressBar;
 import android.widget.ScrollView;
+import android.widget.Switch;
 import android.widget.TextView;
 import android.widget.Toast;
 
-import java.text.SimpleDateFormat;
+import org.json.JSONObject;
+
 import java.util.ArrayList;
-import java.util.Date;
 import java.util.List;
 import java.util.Locale;
 
 public class MainActivity extends Activity {
-    private static final int C_BG = Color.rgb(15, 23, 32);
-    private static final int C_CARD = Color.rgb(24, 35, 46);
-    private static final int C_CARD_ALT = Color.rgb(20, 30, 40);
-    private static final int C_TEXT = Color.rgb(244, 247, 249);
-    private static final int C_MUTED = Color.rgb(170, 183, 195);
-    private static final int C_GREEN = Color.rgb(91, 207, 126);
-    private static final int C_WARN = Color.rgb(246, 200, 95);
-    private static final int C_CRIT = Color.rgb(230, 106, 106);
-    private static final int C_LINE = Color.rgb(45, 61, 75);
+    private static final int BG_DARK = Color.parseColor("#0D1518");
+    private static final int CARD_BG = Color.parseColor("#131F24");
+    private static final int CARD_BORDER = Color.parseColor("#233740");
+    private static final int ACCENT_GREEN = Color.parseColor("#35D07F");
+    private static final int ACCENT_RED = Color.parseColor("#EF5350");
+    private static final int TEXT_PRIMARY = Color.parseColor("#E8F0F2");
+    private static final int TEXT_MUTED = Color.parseColor("#8FA3AD");
 
-    private EditText hostnameInput;
-    private EditText portInput;
-    private EditText designCapacityInput;
-    private EditText initialCyclesInput;
-    private EditText allowedServerInput;
-    private EditText gatewayIpInput;
-    private CheckBox autoStartInput;
-    private CheckBox pushEnabledInput;
-    private EditText pushUrlInput;
-    private EditText pushTokenInput;
-    private EditText pushIntervalInput;
+    private final Handler uiHandler = new Handler(Looper.getMainLooper());
+    private final List<CollapsibleCard> allCards = new ArrayList<>();
+    private AgentConfig cfg;
 
-    private Section agentSection;
-    private Section transportSection;
-    private Section batterySection;
-    private Section systemSection;
-    private Section networkSection;
-    private Section appsSection;
-    private Section deviceSection;
-    private Section settingsSection;
-    private Section diagnosticsSection;
+    private Button btnStartTop, btnStopTop;
 
-    private TextView agentBadge;
-    private TextView agentText;
-    private TextView batteryHeadline;
-    private TextView batteryText;
-    private TextView systemText;
-    private TextView networkText;
-    private TextView appsText;
-    private TextView deviceText;
-    private TextView diagnosticsText;
-    private ProgressBar batteryProgress;
+    private TextView txtAgentBadge;
+    private TextView txtAgentSubtitle;
+    private TextView txtAgentDetails;
 
-    private final List<Section> allSections = new ArrayList<>();
+    private TextView txtTransportSummary;
+    private TextView txtTransportDetails;
+
+    private TextView txtBatterySummary;
+    private TextView txtBatteryDetails;
+
+    private TextView txtSystemSummary;
+    private TextView txtSystemDetails;
+
+    private TextView txtWifiSummary;
+    private TextView txtWifiPingDetails;
+    private Button btnFixWifiLocation;
+
+    private TextView txtAppsSummary;
+    private TextView txtAppsDetails;
+
+    private TextView txtDeviceSummary;
+    private TextView txtDeviceDetails;
+
+    private TextView txtSettingsSummary;
+
+    private EditText edtHostname, edtAllowed, edtGateway, edtDesignMah, edtInitCycles;
+    private EditText edtPushUrl, edtPushToken, edtPushInterval;
+    private Switch swAllowPrivate, swPushEnabled;
+
+    private static class CollapsibleCard {
+        final LinearLayout cardRoot;
+        final LinearLayout bodyLayout;
+        final TextView chevronView;
+        boolean expanded;
+
+        CollapsibleCard(LinearLayout cardRoot, LinearLayout bodyLayout, TextView chevronView, boolean initialExpanded) {
+            this.cardRoot = cardRoot;
+            this.bodyLayout = bodyLayout;
+            this.chevronView = chevronView;
+            setExpanded(initialExpanded);
+        }
+
+        void setExpanded(boolean exp) {
+            this.expanded = exp;
+            this.bodyLayout.setVisibility(exp ? View.VISIBLE : View.GONE);
+            this.chevronView.setText(exp ? "▾" : "▸");
+        }
+
+        void toggle() {
+            setExpanded(!this.expanded);
+        }
+    }
+
+    private final Runnable refreshTask = new Runnable() {
+        @Override
+        public void run() {
+            refreshDashboard();
+            uiHandler.postDelayed(this, 3000L);
+        }
+    };
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
-        getWindow().setStatusBarColor(C_BG);
-        getWindow().setNavigationBarColor(C_BG);
-        setContentView(buildUi());
-        loadConfig();
-        requestRuntimePermissionsIfNeeded();
-        ensureServiceStartedIfAuto();
-        updateDashboard();
-    }
-
-    private void ensureServiceStartedIfAuto() {
-        try {
-            if (AgentConfig.isAutoStart(this) && !AgentStats.read(this).running) {
-                Intent service = new Intent(this, CheckmkAgentService.class);
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) startForegroundService(service);
-                else startService(service);
-            }
-        } catch (Throwable ignored) {}
+        cfg = new AgentConfig(this);
+        buildUi();
+        requestNeededPermissions();
+        startAgentService(CheckmkAgentService.ACTION_START_OR_RELOAD);
     }
 
     @Override
     protected void onResume() {
         super.onResume();
-        if (agentText != null) updateDashboard();
+        refreshDashboard();
+        uiHandler.post(refreshTask);
     }
 
-    private ScrollView buildUi() {
+    @Override
+    protected void onPause() {
+        uiHandler.removeCallbacks(refreshTask);
+        super.onPause();
+    }
+
+    private void buildUi() {
+        allCards.clear();
         ScrollView scroll = new ScrollView(this);
-        scroll.setFillViewport(true);
-        scroll.setBackgroundColor(C_BG);
+        scroll.setBackgroundColor(BG_DARK);
 
         LinearLayout root = new LinearLayout(this);
         root.setOrientation(LinearLayout.VERTICAL);
-        root.setPadding(dp(16), dp(18), dp(16), dp(28));
-        scroll.addView(root, new ScrollView.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT,
-                ViewGroup.LayoutParams.WRAP_CONTENT));
+        root.setPadding(dp(14), dp(14), dp(14), dp(24));
+        scroll.addView(root);
 
-        root.addView(buildHeader());
-        root.addView(space(12));
-        root.addView(buildSectionControls(), matchWrapMargin(0, 0, 0, 12));
+        // Header Row (Shield Badge + Title)
+        LinearLayout headerRow = new LinearLayout(this);
+        headerRow.setOrientation(LinearLayout.HORIZONTAL);
+        headerRow.setGravity(Gravity.CENTER_VERTICAL);
+        headerRow.setPadding(0, 0, 0, dp(10));
 
-        agentSection = section("AGENT", "Pull listener & firewall status", false);
-        agentBadge = badge("STARTING", C_WARN);
-        agentSection.content.addView(agentBadge, wrap());
-        agentText = bodyText();
-        agentText.setPadding(0, dp(12), 0, 0);
-        agentSection.content.addView(agentText, wrap());
-        root.addView(agentSection.card, matchWrapMargin(0, 0, 0, 12));
+        ImageView iconBadge = new ImageView(this);
+        iconBadge.setImageResource(R.mipmap.ic_launcher);
+        iconBadge.setScaleType(ImageView.ScaleType.FIT_CENTER);
+        LinearLayout.LayoutParams iconLp = new LinearLayout.LayoutParams(dp(42), dp(42));
+        iconLp.rightMargin = dp(12);
+        headerRow.addView(iconBadge, iconLp);
 
-        transportSection = section("HYBRID TRANSPORT", "Pull primary + push warm backup", false);
-        TextView transportHelp = bodyText();
-        transportHelp.setText("Pull TCP/6556 menjadi jalur utama (Open / Bebas di jaringan internal & NAT MikroTik seperti agent Windows/Linux). Push menjaga salinan data terbaru di receiver sebagai jalur cadangan.");
-        transportHelp.setTextColor(C_MUTED);
-        transportSection.content.addView(transportHelp, wrap());
-        root.addView(transportSection.card, matchWrapMargin(0, 0, 0, 12));
+        LinearLayout titleCol = new LinearLayout(this);
+        titleCol.setOrientation(LinearLayout.VERTICAL);
 
-        batterySection = section("BATTERY (1-LINE UNIFIED)", "Health (2946 mAh @ 100%), cycles, temp, volt & current", false);
-        batteryHeadline = new TextView(this);
-        batteryHeadline.setTextColor(C_TEXT);
-        batteryHeadline.setTextSize(25);
-        batteryHeadline.setTypeface(Typeface.DEFAULT_BOLD);
-        batterySection.content.addView(batteryHeadline, wrap());
+        TextView title = new TextView(this);
+        title.setText("BMS Agent");
+        title.setTextColor(TEXT_PRIMARY);
+        title.setTextSize(22);
+        title.setTypeface(null, Typeface.BOLD);
+        titleCol.addView(title);
 
-        batteryProgress = new ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal);
-        batteryProgress.setMax(100);
-        batteryProgress.setProgressTintList(ColorStateList.valueOf(C_GREEN));
-        batteryProgress.setProgressBackgroundTintList(ColorStateList.valueOf(C_LINE));
-        LinearLayout.LayoutParams bp = new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, dp(8));
-        bp.setMargins(0, dp(10), 0, dp(10));
-        batterySection.content.addView(batteryProgress, bp);
+        TextView sub = new TextView(this);
+        sub.setText("BMS Agent 1.3.8  •  Android");
+        sub.setTextColor(TEXT_MUTED);
+        sub.setTextSize(12);
+        titleCol.addView(sub);
 
-        batteryText = bodyText();
-        batterySection.content.addView(batteryText, wrap());
-        root.addView(batterySection.card, matchWrapMargin(0, 0, 0, 12));
+        headerRow.addView(titleCol);
+        root.addView(headerRow);
 
-        systemSection = section("SYSTEM", "RAM & internal storage", false);
-        systemText = bodyText();
-        systemSection.content.addView(systemText, wrap());
-        root.addView(systemSection.card, matchWrapMargin(0, 0, 0, 12));
+        // Top Bar 1: EXPAND ALL / COLLAPSE ALL
+        LinearLayout expandCollapseRow = new LinearLayout(this);
+        expandCollapseRow.setOrientation(LinearLayout.HORIZONTAL);
+        expandCollapseRow.setPadding(0, 0, 0, dp(8));
 
-        networkSection = section("NETWORK, AP ROAMING & PING (1H)", "Wi-Fi UniFi/AP roaming & 4x/1m ping (30d CCTV log)", false);
-        networkText = bodyText();
-        networkSection.content.addView(networkText, wrap());
-
-        LinearLayout logActions = new LinearLayout(this);
-        logActions.setOrientation(LinearLayout.HORIZONTAL);
-        Button pingLogBtn = actionButton("VIEW PING LOG", C_CARD_ALT, C_GREEN);
-        pingLogBtn.setOnClickListener(v -> showPingLogDialog());
-        Button roamLogBtn = actionButton("VIEW ROAMING LOG", C_CARD_ALT, C_GREEN);
-        roamLogBtn.setOnClickListener(v -> showRoamingLogDialog());
-        logActions.addView(pingLogBtn, weightButton());
-        LinearLayout.LayoutParams secondLog = weightButton();
-        secondLog.setMargins(dp(8), 0, 0, 0);
-        logActions.addView(roamLogBtn, secondLog);
-        networkSection.content.addView(logActions, matchWrapMargin(0, 12, 0, 0));
-
-        LinearLayout netActions = new LinearLayout(this);
-        netActions.setOrientation(LinearLayout.HORIZONTAL);
-        Button permissionButton = actionButton("APP PERMISSIONS", C_CARD_ALT, C_TEXT);
-        permissionButton.setOnClickListener(v -> openAppSettings());
-        Button batteryOptButton = actionButton("BATTERY UNRESTRICTED", C_CARD_ALT, C_TEXT);
-        batteryOptButton.setOnClickListener(v -> requestIgnoreBatteryOptimizations());
-        netActions.addView(permissionButton, weightButton());
-        LinearLayout.LayoutParams secondP = weightButton();
-        secondP.setMargins(dp(8), 0, 0, 0);
-        netActions.addView(batteryOptButton, secondP);
-        networkSection.content.addView(netActions, matchWrapMargin(0, 8, 0, 0));
-        root.addView(networkSection.card, matchWrapMargin(0, 0, 0, 12));
-
-        appsSection = section("APPLICATIONS INVENTORY", "Installed APK packages & Checkmk HW/SW", false);
-        appsText = bodyText();
-        appsSection.content.addView(appsText, wrap());
-        Button rescanApps = actionButton("SCAN PACKAGES NOW", C_CARD_ALT, C_TEXT);
-        rescanApps.setOnClickListener(v -> {
-            updateDashboard();
-            Toast.makeText(this, "Inventaris aplikasi diperbarui", Toast.LENGTH_SHORT).show();
+        Button btnExpandAll = makeTopBarButton("EXPAND ALL", TEXT_PRIMARY, "#131F24", "#233740");
+        btnExpandAll.setOnClickListener(v -> {
+            for (CollapsibleCard c : allCards) c.setExpanded(true);
         });
-        appsSection.content.addView(rescanApps, matchWrapMargin(0, 10, 0, 0));
-        root.addView(appsSection.card, matchWrapMargin(0, 0, 0, 12));
+        Button btnCollapseAll = makeTopBarButton("COLLAPSE ALL", TEXT_PRIMARY, "#131F24", "#233740");
+        btnCollapseAll.setOnClickListener(v -> {
+            for (CollapsibleCard c : allCards) c.setExpanded(false);
+        });
 
-        deviceSection = section("DEVICE", "Hardware & Android profile", false);
-        deviceText = bodyText();
-        deviceSection.content.addView(deviceText, wrap());
-        root.addView(deviceSection.card, matchWrapMargin(0, 0, 0, 12));
+        expandCollapseRow.addView(btnExpandAll, new LinearLayout.LayoutParams(0, dp(38), 1f));
+        View sp1 = new View(this);
+        expandCollapseRow.addView(sp1, new LinearLayout.LayoutParams(dp(8), 1));
+        expandCollapseRow.addView(btnCollapseAll, new LinearLayout.LayoutParams(0, dp(38), 1f));
+        root.addView(expandCollapseRow);
 
-        settingsSection = section("SETTINGS", "Tap to configure agent & IP Server Checkmk Cabang", false);
-        hostnameInput = input(settingsSection.content, "Hostname Checkmk", InputType.TYPE_CLASS_TEXT,
-                "Contoh: PDA-10-FAUZI");
-        portInput = input(settingsSection.content, "TCP Port", InputType.TYPE_CLASS_NUMBER, "6556");
+        // Top Bar 2: START AGENT / STOP AGENT
+        LinearLayout startStopRow = new LinearLayout(this);
+        startStopRow.setOrientation(LinearLayout.HORIZONTAL);
+        startStopRow.setPadding(0, 0, 0, dp(12));
 
-        allowedServerInput = input(settingsSection.content,
-                "IP Server Checkmk Cabang (Opsional)",
-                InputType.TYPE_CLASS_TEXT,
-                "Kosongkan = Bebas seperti Windows/Linux (Semua Private IP & NAT diizinkan)");
+        btnStartTop = makeTopBarButton("▶ START AGENT", ACCENT_GREEN, "#123828", "#35D07F");
+        btnStartTop.setOnClickListener(v -> handleStartAgent());
 
-        gatewayIpInput = input(settingsSection.content,
-                "IP Gateway Cabang (Ping Monitor Baris ke-3)",
-                InputType.TYPE_CLASS_TEXT,
-                "Kosongkan = Auto-Detect Gateway Wi-Fi (Contoh: 192.168.55.1)");
+        btnStopTop = makeTopBarButton("■ STOP AGENT", ACCENT_RED, "#3A1818", "#EF5350");
+        btnStopTop.setOnClickListener(v -> handleStopAgent());
 
-        Button detectGatewayBtn = actionButton("AUTO-DETECT GATEWAY DARI WI-FI", C_CARD_ALT, C_MUTED);
-        detectGatewayBtn.setOnClickListener(v -> {
-            String detected = DeviceMetrics.getDetectedGatewayIp(this);
-            if (!detected.isEmpty()) {
-                gatewayIpInput.setText(detected);
-                Toast.makeText(this, "Gateway terdeteksi: " + detected, Toast.LENGTH_SHORT).show();
+        startStopRow.addView(btnStartTop, new LinearLayout.LayoutParams(0, dp(38), 1f));
+        View sp2 = new View(this);
+        startStopRow.addView(sp2, new LinearLayout.LayoutParams(dp(8), 1));
+        startStopRow.addView(btnStopTop, new LinearLayout.LayoutParams(0, dp(38), 1f));
+        root.addView(startStopRow);
+
+        if (!NativeBridge.isLoaded()) {
+            TextView err = new TextView(this);
+            err.setText("Native JNI Error: " + NativeBridge.getLoadError());
+            err.setTextColor(ACCENT_RED);
+            err.setPadding(0, 0, 0, dp(10));
+            root.addView(err);
+        }
+
+        // Card 1: AGENT (default expanded = true)
+        txtAgentSubtitle = makeSummaryText("");
+        CollapsibleCard cAgent = createCollapsibleCard(
+                root,
+                "AGENT",
+                "Pull listener & firewall status",
+                txtAgentSubtitle,
+                true
+        );
+
+        txtAgentBadge = new TextView(this);
+        txtAgentBadge.setTextSize(11);
+        txtAgentBadge.setTypeface(null, Typeface.BOLD);
+        txtAgentBadge.setPadding(dp(10), dp(4), dp(10), dp(4));
+        LinearLayout.LayoutParams badgeLp = new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT);
+        badgeLp.topMargin = dp(6);
+        badgeLp.bottomMargin = dp(8);
+        txtAgentBadge.setLayoutParams(badgeLp);
+        cAgent.bodyLayout.addView(txtAgentBadge);
+
+        txtAgentDetails = makeMonoText("");
+        cAgent.bodyLayout.addView(txtAgentDetails);
+
+        LinearLayout agentBtns = new LinearLayout(this);
+        agentBtns.setOrientation(LinearLayout.HORIZONTAL);
+        agentBtns.setPadding(0, dp(10), 0, 0);
+        Button btnStartCard = makeActionButton("START SERVICE");
+        btnStartCard.setOnClickListener(v -> handleStartAgent());
+        Button btnStopCard = makeDangerButton("STOP SERVICE");
+        btnStopCard.setOnClickListener(v -> handleStopAgent());
+        agentBtns.addView(btnStartCard, new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
+        View spAgent = new View(this);
+        agentBtns.addView(spAgent, new LinearLayout.LayoutParams(dp(8), 1));
+        agentBtns.addView(btnStopCard, new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
+        cAgent.bodyLayout.addView(agentBtns);
+
+        // Card 2: HYBRID TRANSPORT (default collapsed = false)
+        txtTransportSummary = makeSummaryText("");
+        CollapsibleCard cTrans = createCollapsibleCard(
+                root,
+                "HYBRID TRANSPORT",
+                "Pull primary + push warm backup",
+                txtTransportSummary,
+                false
+        );
+        txtTransportDetails = makeMonoText("");
+        cTrans.bodyLayout.addView(txtTransportDetails);
+        Button btnPushNow = makeActionButton("PUSH SNAPSHOT NOW");
+        btnPushNow.setOnClickListener(v -> {
+            startAgentService(CheckmkAgentService.ACTION_PUSH_NOW);
+            Toast.makeText(this, "Mengirim push snapshot ke server...", Toast.LENGTH_SHORT).show();
+        });
+        LinearLayout.LayoutParams pushBtnLp = new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT);
+        pushBtnLp.topMargin = dp(8);
+        cTrans.bodyLayout.addView(btnPushNow, pushBtnLp);
+
+        // Card 3: BATTERY (1-LINE UNIFIED) (default collapsed = false)
+        txtBatterySummary = makeSummaryText("");
+        CollapsibleCard cBat = createCollapsibleCard(
+                root,
+                "BATTERY (1-LINE UNIFIED)",
+                "Health, cycles, temp, volt & current",
+                txtBatterySummary,
+                false
+        );
+        txtBatteryDetails = makeMonoText("");
+        cBat.bodyLayout.addView(txtBatteryDetails);
+
+        // Card 4: SYSTEM (default collapsed = false)
+        txtSystemSummary = makeSummaryText("");
+        CollapsibleCard cSys = createCollapsibleCard(
+                root,
+                "SYSTEM",
+                "RAM & internal storage",
+                txtSystemSummary,
+                false
+        );
+        txtSystemDetails = makeMonoText("");
+        cSys.bodyLayout.addView(txtSystemDetails);
+
+        // Card 5: NETWORK, AP ROAMING & PING (1H) (default expanded = true)
+        txtWifiSummary = makeSummaryText("");
+        CollapsibleCard cNet = createCollapsibleCard(
+                root,
+                "NETWORK, AP ROAMING & PING (1H)",
+                "Wi-Fi UniFi/AP roaming & 4x/1m ping (30d CCTV log)",
+                txtWifiSummary,
+                true
+        );
+        txtWifiPingDetails = makeMonoText("");
+        cNet.bodyLayout.addView(txtWifiPingDetails);
+
+        btnFixWifiLocation = makeDangerButton("⚠ IZINKAN LOKASI AKURAT (AGAR SSID & AP TAMPIL)");
+        btnFixWifiLocation.setVisibility(View.GONE);
+        btnFixWifiLocation.setOnClickListener(v -> handleFixWifiLocation());
+        LinearLayout.LayoutParams fixLocLp = new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT);
+        fixLocLp.topMargin = dp(8);
+        cNet.bodyLayout.addView(btnFixWifiLocation, fixLocLp);
+
+        LinearLayout netBtns = new LinearLayout(this);
+        netBtns.setOrientation(LinearLayout.HORIZONTAL);
+        netBtns.setPadding(0, dp(10), 0, 0);
+        Button btnLog = makeActionButton("VIEW PING LOG");
+        btnLog.setOnClickListener(v -> showPingLogDialog());
+        Button btnPingNow = makeActionButton("PING 4X NOW");
+        btnPingNow.setOnClickListener(v -> {
+            startAgentService(CheckmkAgentService.ACTION_PING_NOW);
+            Toast.makeText(this, "Ping 4x ke 3 target sedang berjalan...", Toast.LENGTH_SHORT).show();
+        });
+        netBtns.addView(btnLog, new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
+        View spacer = new View(this);
+        netBtns.addView(spacer, new LinearLayout.LayoutParams(dp(8), 1));
+        netBtns.addView(btnPingNow, new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
+        cNet.bodyLayout.addView(netBtns);
+
+        // Card 6: APPLICATIONS (default collapsed = false)
+        txtAppsSummary = makeSummaryText("");
+        CollapsibleCard cApps = createCollapsibleCard(
+                root,
+                "APPLICATIONS",
+                "Installed Android packages & HW/SW inventory",
+                txtAppsSummary,
+                false
+        );
+        txtAppsDetails = makeMonoText("");
+        cApps.bodyLayout.addView(txtAppsDetails);
+
+        // Card 7: DEVICE (default collapsed = false)
+        txtDeviceSummary = makeSummaryText("");
+        CollapsibleCard cDev = createCollapsibleCard(
+                root,
+                "DEVICE",
+                "Hardware & Android profile",
+                txtDeviceSummary,
+                false
+        );
+        txtDeviceDetails = makeMonoText("");
+        cDev.bodyLayout.addView(txtDeviceDetails);
+
+        // Card 8: SETTINGS (default collapsed = false)
+        txtSettingsSummary = makeSummaryText("");
+        CollapsibleCard cSet = createCollapsibleCard(
+                root,
+                "SETTINGS",
+                "Tap to configure agent & IP Server Checkmk Cabang",
+                txtSettingsSummary,
+                false
+        );
+
+        edtHostname = addSettingField(cSet.bodyLayout, "Hostname Checkmk", cfg.getHostname(), InputType.TYPE_CLASS_TEXT);
+
+        swAllowPrivate = new Switch(this);
+        swAllowPrivate.setText("Izinkan semua IP Private/NAT/VPN (RFC1918 - sama seperti Linux/Windows)");
+        swAllowPrivate.setTextColor(TEXT_PRIMARY);
+        swAllowPrivate.setChecked(cfg.isAllowAllPrivate());
+        swAllowPrivate.setPadding(0, dp(8), 0, dp(8));
+        cSet.bodyLayout.addView(swAllowPrivate);
+
+        edtAllowed = addSettingField(cSet.bodyLayout, "IP Server Checkmk Cabang (kosong = bebas RFC1918)",
+                cfg.getAllowedServersRaw(), InputType.TYPE_CLASS_TEXT);
+        edtGateway = addSettingField(cSet.bodyLayout, "IP Gateway Cabang (Ping Monitor Baris ke-3)",
+                cfg.getConfiguredGatewayIp(), InputType.TYPE_CLASS_TEXT);
+
+        Button btnDetectGw = makeActionButton("AUTO-DETECT GATEWAY DARI WI-FI");
+        btnDetectGw.setOnClickListener(v -> {
+            String gw = AgentConfig.detectWifiGateway(this);
+            edtGateway.setText(gw);
+            Toast.makeText(this, gw.isEmpty() ? "Gateway tidak terdeteksi" : "Gateway: " + gw, Toast.LENGTH_SHORT).show();
+        });
+        LinearLayout.LayoutParams gwBtnLp = new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT);
+        gwBtnLp.topMargin = dp(6);
+        cSet.bodyLayout.addView(btnDetectGw, gwBtnLp);
+
+        edtDesignMah = addSettingField(cSet.bodyLayout, "Design Capacity (mAh, 0 = auto)",
+                String.valueOf(cfg.getBatteryDesignMahOverride()), InputType.TYPE_CLASS_NUMBER);
+        edtInitCycles = addSettingField(cSet.bodyLayout, "Initial Battery Cycles (0 = auto hitung dari pengisian)",
+                String.valueOf(cfg.getInitialBatteryCycles()), InputType.TYPE_CLASS_NUMBER);
+
+        swPushEnabled = new Switch(this);
+        swPushEnabled.setText("Aktifkan PUSH backup (Hybrid)");
+        swPushEnabled.setTextColor(TEXT_PRIMARY);
+        swPushEnabled.setChecked(cfg.isPushEnabled());
+        swPushEnabled.setPadding(0, dp(8), 0, dp(8));
+        cSet.bodyLayout.addView(swPushEnabled);
+
+        edtPushUrl = addSettingField(cSet.bodyLayout, "Push Receiver URL", cfg.getPushUrl(), InputType.TYPE_TEXT_VARIATION_URI);
+        edtPushToken = addSettingField(cSet.bodyLayout, "Push Token", cfg.getPushToken(), InputType.TYPE_CLASS_TEXT);
+        edtPushInterval = addSettingField(cSet.bodyLayout, "Push Interval (detik, minimal 60)",
+                String.valueOf(cfg.getPushIntervalSec()), InputType.TYPE_CLASS_NUMBER);
+
+        Button btnSave = makeActionButton("SIMPAN & RELOAD RUST AGENT");
+        btnSave.setOnClickListener(v -> saveSettings());
+        LinearLayout.LayoutParams saveLp = new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT);
+        saveLp.topMargin = dp(12);
+        cSet.bodyLayout.addView(btnSave, saveLp);
+
+        setContentView(scroll);
+    }
+
+    private void handleStartAgent() {
+        startAgentService(CheckmkAgentService.ACTION_START_OR_RELOAD);
+        uiHandler.postDelayed(this::refreshDashboard, 250L);
+        Toast.makeText(this, "BMS Agent Service dijalankan", Toast.LENGTH_SHORT).show();
+    }
+
+    private void handleStopAgent() {
+        Intent svc = new Intent(this, CheckmkAgentService.class);
+        svc.setAction(CheckmkAgentService.ACTION_STOP_SERVICE);
+        startService(svc);
+        uiHandler.postDelayed(this::refreshDashboard, 250L);
+        Toast.makeText(this, "Agent Service dihentikan.", Toast.LENGTH_SHORT).show();
+    }
+
+    private void refreshDashboard() {
+        String ip = AgentConfig.getDeviceIpv4(this);
+        String gw = cfg.getGatewayIp();
+        boolean isRunning = CheckmkAgentService.isRunning();
+
+        // Update Top Start/Stop Buttons visual state
+        btnStartTop.setAlpha(isRunning ? 0.55f : 1.0f);
+        btnStopTop.setAlpha(isRunning ? 1.0f : 0.55f);
+
+        txtAgentSubtitle.setText(String.format(Locale.US, "%s  •  %s  •  %s",
+                isRunning ? "RUNNING" : "STOPPED", cfg.getHostname(), ip));
+
+        GradientDrawable badgeBg = new GradientDrawable();
+        badgeBg.setCornerRadius(dp(12));
+        badgeBg.setColor(Color.parseColor(isRunning ? "#123828" : "#3A1818"));
+        badgeBg.setStroke(dp(1), isRunning ? ACCENT_GREEN : ACCENT_RED);
+        txtAgentBadge.setBackground(badgeBg);
+        txtAgentBadge.setTextColor(isRunning ? ACCENT_GREEN : ACCENT_RED);
+        txtAgentBadge.setText(isRunning ? "● AGENT RUNNING" : "● AGENT STOPPED");
+
+        String lastPull = "N/A";
+        String lastClient = "N/A";
+        long connCount = 0;
+        long rejCount = 0;
+        String lastPushAt = "N/A";
+        String lastPushRes = "Push backup not configured";
+        long pushOk = 0;
+        long pushFail = 0;
+        String pushDesc = cfg.isPushEnabled()
+                ? "PUSH ENABLED (" + cfg.getPushIntervalSec() + "s)"
+                : "PUSH NOT CONFIGURED";
+
+        if (NativeBridge.isLoaded()) {
+            try {
+                JSONObject st = new JSONObject(NativeBridge.getStatsJson());
+                lastPull = st.optString("last_pull_str", "N/A");
+                lastClient = st.optString("last_client_ip", "");
+                if (lastClient.isEmpty()) lastClient = "N/A";
+                connCount = st.optLong("accepted_connections", 0);
+                rejCount = st.optLong("rejected_connections", 0);
+                pushOk = st.optLong("push_success_count", 0);
+                pushFail = st.optLong("push_failure_count", 0);
+                lastPushAt = st.optString("last_push_str", "N/A");
+                String r = st.optString("last_push_result", "");
+                if (!r.isEmpty()) lastPushRes = r;
+                if (cfg.isPushEnabled()) {
+                    pushDesc = String.format(Locale.US, "PUSH OK:%d FAIL:%d", pushOk, pushFail);
+                }
+            } catch (Throwable ignored) {}
+        }
+
+        String listenMode = cfg.isAllowAllPrivate() ? "Open" : "Restricted";
+        String allowedSrv = cfg.getAllowedServersRaw().trim().isEmpty() ? "Open" : cfg.getAllowedServersRaw();
+        txtAgentDetails.setText(String.format(Locale.US,
+                "Hostname     : %s\nVersion      : Agen BMS : 1.3.8\nAccess       : %s\nDevice IP    : %s\nLast pull    : %s\nLast client  : %s\nServer Cabang: %s\nPulls / Rej  : %d / %d\nMode         : HYBRID (PULL primary + PUSH backup)",
+                cfg.getHostname(), listenMode, ip,
+                lastPull, lastClient, allowedSrv, connCount, rejCount));
+
+        txtTransportSummary.setText(String.format(Locale.US,
+                "PULL primary  •  %s  •  %ds",
+                pushDesc, cfg.getPushIntervalSec()));
+        txtTransportDetails.setText(String.format(Locale.US,
+                "Primary      : PULL\nBackup       : PUSH HTTP(S)\nReceiver URL : %s\nPush Interval: %d sec\nLast Push    : %s\nPush Stats   : OK %d / Fail %d\nLast Result  : %s",
+                cfg.getPushUrl().isEmpty() ? "Not configured" : cfg.getPushUrl(),
+                cfg.getPushIntervalSec(),
+                lastPushAt, pushOk, pushFail, lastPushRes));
+
+        DeviceMetrics.BatterySnapshot bs = DeviceMetrics.readBattery(this, cfg);
+        txtBatterySummary.setText(String.format(Locale.US,
+                "%d%% (%s)  •  Health %.1f%%  •  Cycles %d  •  %.1f C  •  %.2f V",
+                bs.levelPct, bs.statusText, bs.healthPct, bs.cycles, bs.tempC, bs.voltageV));
+        txtBatteryDetails.setText(String.format(Locale.US,
+                "Status       : %s (%d%%)\nReal Health  : %.1f%%\nCycles       : %d\nFull Capacity: %.0f mAh\nDesign Spec  : %.0f mAh\nTemperature  : %.1f C\nVoltage      : %.2f V\nCurrent Now  : %d mA\nCalculation  : %s",
+                bs.statusText, bs.levelPct, bs.healthPct, bs.cycles,
+                bs.estFullMah, bs.designMah, bs.tempC, bs.voltageV, bs.currentMa, bs.calcMethod));
+
+        DeviceMetrics.RamStorageSnapshot rs = DeviceMetrics.readRamStorage(this);
+        txtSystemSummary.setText(String.format(Locale.US,
+                "RAM %d%%  •  Storage %d%%",
+                rs.ramPct, rs.storagePct));
+        txtSystemDetails.setText(String.format(Locale.US,
+                "RAM Usage    : %d%% (%.2f GB used / %.2f GB free / %.2f GB total)\nInternal Disk: %d%% (%.2f GB used / %.2f GB free / %.2f GB total)",
+                rs.ramPct, rs.ramUsedGb, rs.ramFreeGb, rs.ramTotalGb,
+                rs.storagePct, rs.storageUsedGb, rs.storageFreeGb, rs.storageTotalGb));
+
+        DeviceMetrics.WifiSnapshot ws = DeviceMetrics.readWifi(this);
+        txtWifiSummary.setText(String.format(Locale.US,
+                "%s  •  %d dBm  •  Roam %dx/1h",
+                ws.ssid, ws.rssiDbm, ws.roam1h));
+        txtWifiPingDetails.setText(String.format(Locale.US,
+                "Wi-Fi        : %s\nSSID         : %s\nAP BSSID     : %s (%s)\nBand / Ch    : %s\nAP Roaming   : %dx/1h (Total %dx)\nLast Roam    : %s\nSignal/Speed : %d dBm  •  %d Mbps\nLocal IP     : %s\nPing Target 1: 192.168.122.10 (Server Lokal)\nPing Target 2: 8.8.8.8 (Internet)\nPing Target 3: %s (Gateway Cabang)",
+                ws.status, ws.ssid, ws.bssid, ws.vendor, ws.bandChannel,
+                ws.roam1h, ws.roamTotal, ws.lastRoam, ws.rssiDbm, ws.linkSpeedMbps,
+                ws.ip, gw.isEmpty() ? "(auto)" : gw));
+
+        if (btnFixWifiLocation != null) {
+            boolean fineGranted = DeviceMetrics.hasFineLocationPermission(this);
+            boolean gpsEnabled = DeviceMetrics.isLocationServiceEnabled(this);
+            if (!fineGranted) {
+                btnFixWifiLocation.setText("⚠ IZINKAN LOKASI AKURAT (AGAR SSID & AP TAMPIL)");
+                btnFixWifiLocation.setVisibility(View.VISIBLE);
+            } else if (!gpsEnabled) {
+                btnFixWifiLocation.setText("⚠ NYALAKAN GPS / LOKASI HP (AGAR SSID & AP TAMPIL)");
+                btnFixWifiLocation.setVisibility(View.VISIBLE);
             } else {
-                Toast.makeText(this, "Tidak dapat mendeteksi gateway (Pastikan Wi-Fi terhubung)", Toast.LENGTH_SHORT).show();
+                btnFixWifiLocation.setVisibility(View.GONE);
             }
-        });
-        settingsSection.content.addView(detectGatewayBtn, matchWrapMargin(0, 0, 0, 8));
-
-        designCapacityInput = input(settingsSection.content,
-                "Design Capacity (mAh, 0 = auto)",
-                InputType.TYPE_CLASS_NUMBER | InputType.TYPE_NUMBER_FLAG_DECIMAL,
-                "0 = Otomatis (MT93 Spec = 4800 mAh, 100% Full = 2946 mAh)");
-        initialCyclesInput = input(settingsSection.content,
-                "Initial Battery Cycles (0 = auto hitung dari pengisian)",
-                InputType.TYPE_CLASS_NUMBER,
-                "0");
-
-        pushEnabledInput = new CheckBox(this);
-        pushEnabledInput.setText("Aktifkan PUSH backup (Hybrid)");
-        pushEnabledInput.setTextColor(C_TEXT);
-        pushEnabledInput.setButtonTintList(ColorStateList.valueOf(C_GREEN));
-        pushEnabledInput.setPadding(0, dp(6), 0, dp(6));
-        settingsSection.content.addView(pushEnabledInput, matchWrap());
-
-        pushUrlInput = input(settingsSection.content,
-                "Push Receiver URL",
-                InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_URI,
-                "Contoh: http://<IP-Server-Cabang>:18080/api/v1/agent");
-        pushTokenInput = input(settingsSection.content,
-                "Push Token",
-                InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_PASSWORD,
-                "Bearer token receiver (opsional untuk test)");
-        pushIntervalInput = input(settingsSection.content,
-                "Push Interval (detik, minimal 60)",
-                InputType.TYPE_CLASS_NUMBER,
-                "300");
-
-        Button testPush = actionButton("TEST PUSH NOW", C_CARD_ALT, C_TEXT);
-        testPush.setOnClickListener(v -> testPushNow());
-        settingsSection.content.addView(testPush, matchWrapMargin(0, 2, 0, 8));
-
-        autoStartInput = new CheckBox(this);
-        autoStartInput.setText("Start agent otomatis setelah boot");
-        autoStartInput.setTextColor(C_TEXT);
-        autoStartInput.setButtonTintList(ColorStateList.valueOf(C_GREEN));
-        autoStartInput.setPadding(0, dp(6), 0, dp(8));
-        settingsSection.content.addView(autoStartInput, matchWrap());
-
-        Button start = actionButton("SAVE & START AGENT", C_GREEN, Color.rgb(10, 32, 18));
-        start.setOnClickListener(v -> saveAndStart());
-        settingsSection.content.addView(start, matchWrapMargin(0, 4, 0, 8));
-
-        LinearLayout actions = new LinearLayout(this);
-        actions.setOrientation(LinearLayout.HORIZONTAL);
-        Button refresh = actionButton("REFRESH", C_CARD_ALT, C_TEXT);
-        refresh.setOnClickListener(v -> updateDashboard());
-        Button preview = actionButton("AGENT OUTPUT", C_CARD_ALT, C_TEXT);
-        preview.setOnClickListener(v -> showAgentOutput());
-        actions.addView(refresh, weightButton());
-        LinearLayout.LayoutParams second = weightButton();
-        second.setMargins(dp(8), 0, 0, 0);
-        actions.addView(preview, second);
-        settingsSection.content.addView(actions, matchWrapMargin(0, 0, 0, 8));
-
-        Button stop = actionButton("STOP AGENT", Color.rgb(82, 42, 47), Color.rgb(255, 205, 210));
-        stop.setOnClickListener(v -> {
-            stopService(new Intent(this, CheckmkAgentService.class));
-            AgentStats.recordStop(this);
-            Toast.makeText(this, "Agent dihentikan", Toast.LENGTH_SHORT).show();
-            agentText.postDelayed(this::updateDashboard, 250);
-        });
-        settingsSection.content.addView(stop, matchWrap());
-        root.addView(settingsSection.card, matchWrapMargin(0, 0, 0, 12));
-
-        diagnosticsSection = section("DIAGNOSTICS", "Status & counter", false);
-        diagnosticsText = bodyText();
-        diagnosticsText.setTextIsSelectable(true);
-        diagnosticsSection.content.addView(diagnosticsText, wrap());
-        root.addView(diagnosticsSection.card, matchWrapMargin(0, 0, 0, 12));
-
-        TextView footer = new TextView(this);
-        footer.setText("Universal Android Agent • Checkmk Hybrid\nDibuat oleh IT OPS HQEJBNT");
-        footer.setTextColor(C_MUTED);
-        footer.setTextSize(12);
-        footer.setGravity(Gravity.CENTER);
-        footer.setPadding(dp(12), dp(4), dp(12), 0);
-        root.addView(footer, matchWrap());
-
-        return scroll;
-    }
-
-    private View buildHeader() {
-        LinearLayout header = new LinearLayout(this);
-        header.setOrientation(LinearLayout.HORIZONTAL);
-        header.setGravity(Gravity.CENTER_VERTICAL);
-
-        ImageView icon = new ImageView(this);
-        icon.setImageResource(R.drawable.ic_cmkagent);
-        LinearLayout.LayoutParams ip = new LinearLayout.LayoutParams(dp(58), dp(58));
-        ip.setMargins(0, 0, dp(14), 0);
-        header.addView(icon, ip);
-
-        LinearLayout text = new LinearLayout(this);
-        text.setOrientation(LinearLayout.VERTICAL);
-        TextView title = new TextView(this);
-        title.setText("cmkagent");
-        title.setTextColor(C_TEXT);
-        title.setTextSize(29);
-        title.setTypeface(Typeface.DEFAULT_BOLD);
-        TextView subtitle = new TextView(this);
-        subtitle.setText("Checkmk Universal Android Agent  •  v" + CheckmkOutput.VERSION);
-        subtitle.setTextColor(C_MUTED);
-        subtitle.setTextSize(13);
-        text.addView(title);
-        text.addView(subtitle);
-        header.addView(text, new LinearLayout.LayoutParams(0,
-                ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
-        return header;
-    }
-
-    private View buildSectionControls() {
-        LinearLayout row = new LinearLayout(this);
-        row.setOrientation(LinearLayout.HORIZONTAL);
-        Button expand = actionButton("EXPAND ALL", C_CARD_ALT, C_TEXT);
-        Button collapse = actionButton("COLLAPSE ALL", C_CARD_ALT, C_TEXT);
-        expand.setOnClickListener(v -> setAllSections(true));
-        collapse.setOnClickListener(v -> setAllSections(false));
-        row.addView(expand, weightButton());
-        LinearLayout.LayoutParams cp = weightButton();
-        cp.setMargins(dp(8), 0, 0, 0);
-        row.addView(collapse, cp);
-        return row;
-    }
-
-    private Section section(String titleText, String subtitleText, boolean expanded) {
-        Section s = new Section();
-        s.card = new LinearLayout(this);
-        s.card.setOrientation(LinearLayout.VERTICAL);
-        s.card.setPadding(dp(16), dp(13), dp(16), dp(14));
-        s.card.setBackground(rounded(C_CARD, 16, C_LINE, 1));
-
-        LinearLayout header = new LinearLayout(this);
-        header.setOrientation(LinearLayout.HORIZONTAL);
-        header.setGravity(Gravity.CENTER_VERTICAL);
-        header.setPadding(0, dp(2), 0, dp(2));
-
-        LinearLayout labels = new LinearLayout(this);
-        labels.setOrientation(LinearLayout.VERTICAL);
-        TextView title = new TextView(this);
-        title.setText(titleText);
-        title.setTextColor(C_GREEN);
-        title.setTextSize(13);
-        title.setTypeface(Typeface.DEFAULT_BOLD);
-        TextView subtitle = new TextView(this);
-        subtitle.setText(subtitleText);
-        subtitle.setTextColor(C_MUTED);
-        subtitle.setTextSize(12);
-        subtitle.setPadding(0, dp(2), 0, 0);
-        labels.addView(title, wrap());
-        labels.addView(subtitle, wrap());
-        header.addView(labels, new LinearLayout.LayoutParams(0,
-                ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
-
-        s.arrow = new TextView(this);
-        s.arrow.setTextColor(C_MUTED);
-        s.arrow.setTextSize(20);
-        s.arrow.setGravity(Gravity.CENTER);
-        s.arrow.setPadding(dp(12), 0, dp(4), 0);
-        header.addView(s.arrow, new LinearLayout.LayoutParams(dp(44), dp(44)));
-        s.card.addView(header, matchWrap());
-
-        s.summary = new TextView(this);
-        s.summary.setTextColor(C_TEXT);
-        s.summary.setTextSize(14);
-        s.summary.setTypeface(Typeface.DEFAULT_BOLD);
-        s.summary.setPadding(0, dp(8), 0, dp(2));
-        s.card.addView(s.summary, matchWrap());
-
-        s.content = new LinearLayout(this);
-        s.content.setOrientation(LinearLayout.VERTICAL);
-        s.content.setPadding(0, dp(12), 0, 0);
-        s.card.addView(s.content, matchWrap());
-
-        View.OnClickListener toggle = v -> setSectionExpanded(s, !s.expanded);
-        header.setOnClickListener(toggle);
-        s.summary.setOnClickListener(toggle);
-        s.card.setClickable(true);
-        s.card.setFocusable(true);
-
-        allSections.add(s);
-        setSectionExpanded(s, expanded);
-        return s;
-    }
-
-    private void setSectionExpanded(Section s, boolean expanded) {
-        s.expanded = expanded;
-        s.content.setVisibility(expanded ? View.VISIBLE : View.GONE);
-        s.arrow.setText(expanded ? "▾" : "▸");
-    }
-
-    private void setAllSections(boolean expanded) {
-        for (Section s : allSections) setSectionExpanded(s, expanded);
-    }
-
-    private void loadConfig() {
-        hostnameInput.setText(AgentConfig.getHostname(this));
-        portInput.setText(String.valueOf(AgentConfig.getPort(this)));
-        double design = AgentConfig.getDesignCapacityMah(this);
-        designCapacityInput.setText(design > 0
-                ? String.format(Locale.US, "%.0f", design) : "0");
-        initialCyclesInput.setText(String.valueOf(AgentConfig.getInitialCycleCount(this)));
-        allowedServerInput.setText(AgentConfig.getAllowedServer(this));
-        gatewayIpInput.setText(AgentConfig.getConfiguredGatewayIp(this));
-        pushEnabledInput.setChecked(AgentConfig.isPushEnabled(this));
-        pushUrlInput.setText(AgentConfig.getPushUrl(this));
-        pushTokenInput.setText(AgentConfig.getPushToken(this));
-        pushIntervalInput.setText(String.valueOf(AgentConfig.getPushIntervalSec(this)));
-        autoStartInput.setChecked(AgentConfig.isAutoStart(this));
-    }
-
-    private boolean saveConfigOnly() {
-        try {
-            String hostname = hostnameInput.getText().toString().trim();
-            int port = Integer.parseInt(portInput.getText().toString().trim());
-            String designRaw = designCapacityInput.getText().toString().trim();
-            double design = designRaw.isEmpty() ? 0.0 : Double.parseDouble(designRaw);
-            String initCyclesRaw = initialCyclesInput.getText().toString().trim();
-            int initCycles = initCyclesRaw.isEmpty() ? 0 : Integer.parseInt(initCyclesRaw);
-            String allowed = allowedServerInput.getText().toString().trim();
-            String gatewayIp = gatewayIpInput.getText().toString().trim();
-            boolean pushEnabled = pushEnabledInput.isChecked();
-            String pushUrl = pushUrlInput.getText().toString().trim();
-            String pushToken = pushTokenInput.getText().toString().trim();
-            String pushIntervalRaw = pushIntervalInput.getText().toString().trim();
-            int pushInterval = pushIntervalRaw.isEmpty() ? 300 : Integer.parseInt(pushIntervalRaw);
-            if (port < 1 || port > 65535) throw new IllegalArgumentException("Port tidak valid");
-            if (design < 0 || design > 50000) throw new IllegalArgumentException("Design capacity tidak valid");
-            if (initCycles < 0 || initCycles > 10000) throw new IllegalArgumentException("Initial cycles tidak valid");
-            if (!AgentConfig.isValidAllowedServerList(allowed)) {
-                throw new IllegalArgumentException("Format IP Server Checkmk tidak valid (kosongkan untuk bebas seperti Windows/Linux, atau isi IP/CIDR)");
-            }
-            if (!gatewayIp.isEmpty() && !AgentConfig.isValidIpv4(gatewayIp)) {
-                throw new IllegalArgumentException("Format IP Gateway Cabang tidak valid (contoh: 192.168.55.1)");
-            }
-            if (pushInterval < 60 || pushInterval > 86400) throw new IllegalArgumentException("Push interval harus 60-86400 detik");
-            if (pushEnabled && !pushUrl.isEmpty()
-                    && !(pushUrl.startsWith("http://") || pushUrl.startsWith("https://"))) {
-                throw new IllegalArgumentException("Push URL harus dimulai http:// atau https://");
-            }
-            AgentConfig.save(this, hostname, port, design, initCycles, autoStartInput.isChecked(), allowed, gatewayIp,
-                    pushEnabled, pushUrl, pushToken, pushInterval);
-            return true;
-        } catch (Exception e) {
-            Toast.makeText(this, "Konfigurasi tidak valid: " + e.getMessage(), Toast.LENGTH_LONG).show();
-            return false;
         }
-    }
 
-    private void saveAndStart() {
-        if (!saveConfigOnly()) return;
-        stopService(new Intent(this, CheckmkAgentService.class));
-        Intent service = new Intent(this, CheckmkAgentService.class);
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) startForegroundService(service);
-        else startService(service);
-        Toast.makeText(this, "cmkagent berjalan", Toast.LENGTH_SHORT).show();
-        agentText.postDelayed(this::updateDashboard, 500);
-    }
+        DeviceMetrics.AppCountSnapshot ac = DeviceMetrics.readAppCounts(this);
+        txtAppsSummary.setText(String.format(Locale.US,
+                "%d Apps  •  %d User  •  HW/SW Ready",
+                ac.totalApps, ac.userApps));
+        txtAppsDetails.setText(String.format(Locale.US,
+                "Total Packages : %d\nUser Installed : %d\nSystem Packages: %d\nInventory Cache: 6 hours (<<<lnx_packages:sep(124)>>>)",
+                ac.totalApps, ac.userApps, ac.systemApps));
 
-    private void updateDashboard() {
-        DeviceMetrics.BatteryInfo b = DeviceMetrics.readBattery(this);
-        DeviceMetrics.UsageInfo ram = DeviceMetrics.readRam(this);
-        DeviceMetrics.UsageInfo storage = DeviceMetrics.readStorage();
-        DeviceMetrics.WifiStatus wifi = DeviceMetrics.readWifi(this);
-        DeviceMetrics.DeviceInfo device = DeviceMetrics.readDeviceInfo();
-        DeviceMetrics.AppInventoryInfo apps = DeviceMetrics.readAppInventory(this);
-        AgentStats.Snapshot stats = AgentStats.read(this);
-        PingMonitor.TargetStatus pingLocal = PingMonitor.readStatus(this, PingMonitor.TARGET_LOCAL);
-        PingMonitor.TargetStatus pingNet = PingMonitor.readStatus(this, PingMonitor.TARGET_INTERNET);
-        PingMonitor.TargetStatus pingGw = PingMonitor.readStatus(this, PingMonitor.TARGET_GATEWAY_KEY);
+        String uptimeStr = DeviceMetrics.formatUptime(SystemClock.elapsedRealtime() / 1000L);
+        txtDeviceSummary.setText(String.format(Locale.US,
+                "%s %s  •  Android %s",
+                Build.MANUFACTURER, Build.MODEL, Build.VERSION.RELEASE));
+        txtDeviceDetails.setText(String.format(Locale.US,
+                "Manufacturer : %s\nModel        : %s\nAndroid Ver  : %s (SDK %d)\nABI          : %s\nUptime       : %s",
+                Build.MANUFACTURER, Build.MODEL, Build.VERSION.RELEASE, Build.VERSION.SDK_INT,
+                Build.SUPPORTED_ABIS.length > 0 ? Build.SUPPORTED_ABIS[0] : "arm64", uptimeStr));
 
-        String localIp = DeviceMetrics.getLocalIpv4();
-        String lastPull = stats.lastPullMs > 0 ? formatDate(stats.lastPullMs) : "Belum ada";
-        String allowDisplay = AgentConfig.getAllowedServerDisplay(this);
-
-        agentSection.summary.setText((stats.running ? "RUNNING" : "STOPPED")
-                + "  •  " + AgentConfig.getHostname(this) + "  •  " + localIp);
-        agentBadge.setText(stats.running ? "● AGENT RUNNING" : "● AGENT STOPPED");
-        styleBadge(agentBadge, stats.running ? C_GREEN : C_CRIT);
-        agentText.setText(
-                "Hostname     : " + AgentConfig.getHostname(this) + "\n"
-                        + "Listen       : 0.0.0.0:" + AgentConfig.getPort(this) + " (Open / Private IP)\n"
-                        + "Device IP    : " + localIp + "\n"
-                        + "Last pull    : " + lastPull + "\n"
-                        + "Last client  : " + stats.lastClient + "\n"
-                        + "Server Cabang: " + allowDisplay + "\n"
-                        + "Mode         : HYBRID (PULL primary + PUSH backup)"
-        );
-
-        String pushUrl = AgentConfig.getPushUrl(this);
-        boolean pushConfigured = AgentConfig.isPushConfigured(this);
-        String lastPush = stats.lastPushMs > 0 ? formatDate(stats.lastPushMs) : "Belum ada";
-        String pushState = !pushConfigured ? "NOT CONFIGURED"
-                : stats.lastPushMs <= 0 ? "WAITING"
-                : stats.lastPushOk ? "OK" : "FAILED";
-        transportSection.summary.setText("PULL primary  •  PUSH " + pushState
-                + "  •  " + AgentConfig.getPushIntervalSec(this) + "s");
-        TextView transportBody = ensureTransportBody();
-        transportBody.setText(
-                "Primary        : PULL TCP/" + AgentConfig.getPort(this) + "\n"
-                        + "Backup         : PUSH HTTP(S)\n"
-                        + "Receiver       : " + (pushUrl.isEmpty() ? "Not configured" : pushUrl) + "\n"
-                        + "Interval       : " + AgentConfig.getPushIntervalSec(this) + " sec\n"
-                        + "Last push      : " + lastPush + "\n"
-                        + "Last result    : " + pushState + "\n"
-                        + "HTTP code      : " + (stats.lastPushCode > 0 ? stats.lastPushCode : "N/A") + "\n"
-                        + "Detail         : " + stats.lastPushMessage + "\n"
-                        + "Push success   : " + stats.pushSuccesses + "\n"
-                        + "Push failures  : " + stats.pushFailures
-        );
-
-        int level = Math.max(0, b.level);
-        int batteryColor = level < 15 ? C_CRIT : level < 30 ? C_WARN : C_GREEN;
-        batteryProgress.setProgress(level);
-        batteryProgress.setProgressTintList(ColorStateList.valueOf(batteryColor));
-        batteryHeadline.setText((b.level >= 0 ? b.level + "%" : "N/A") + "  •  " + b.status);
-        batteryHeadline.setTextColor(batteryColor);
-
-        String health = Double.isNaN(b.healthPercent) ? "N/A"
-                : String.format(Locale.US, "%.1f%%", b.healthPercent);
-        String full = Double.isNaN(b.fullCapacityMah) ? "2946 mAh"
-                : Math.round(b.fullCapacityMah) + " mAh";
-        String design = Double.isNaN(b.designCapacityMah) ? "4800 mAh"
-                : Math.round(b.designCapacityMah) + " mAh";
-        String temp = Double.isNaN(b.temperatureC) ? "N/A"
-                : String.format(Locale.US, "%.1f C", b.temperatureC);
-        String voltage = Double.isNaN(b.voltageV) ? "N/A"
-                : String.format(Locale.US, "%.2f V", b.voltageV);
-        String chargeNow = Double.isNaN(b.chargeCounterMah) ? "N/A"
-                : String.format(Locale.US, "%.0f mAh", b.chargeCounterMah);
-        double activeCur = !Double.isNaN(b.currentNowMa) ? b.currentNowMa : b.currentAverageMa;
-        String currentFlow = Double.isNaN(activeCur) ? "N/A"
-                : String.format(Locale.US, "%.0f mA", activeCur);
-
-        batterySection.summary.setText((b.level >= 0 ? b.level + "%" : "N/A")
-                + " (" + b.status + ") • Health " + health
-                + " • Cycles " + b.cycleCount + " • " + temp + " • " + voltage);
-        batteryText.setText(
-                "Checkmk Row      : 1 Baris Terpadu (Health_Battery)\n"
-                        + "Level / Status   : " + (b.level >= 0 ? b.level + "%" : "N/A") + " (" + b.status + ")\n"
-                        + "Real Health      : " + health + "\n"
-                        + "Charging Cycles  : " + b.cycleCount + " (" + b.chargeSessions + "x sesi, "
-                        + Math.round(b.totalChargedMah) + " mAh terakumulasi)\n"
-                        + "Full Capacity    : " + full + " (Acuan 100% Charge = 2946 mAh)\n"
-                        + "Design Spec      : " + design + " (" + b.designCapacitySource + ")\n"
-                        + "Current Charge   : " + chargeNow + "\n"
-                        + "Temperature      : " + temp + "\n"
-                        + "Voltage          : " + voltage + "\n"
-                        + "Electric Current : " + currentFlow + "\n"
-                        + "Calculation      : " + b.fullCapacitySource
-        );
-
-        systemSection.summary.setText("RAM " + Math.round(ram.usedPercent) + "%  •  Storage "
-                + Math.round(storage.usedPercent) + "%");
-        systemText.setText(
-                "RAM      : " + Math.round(ram.usedPercent) + "% used (Cache 30m)\n"
-                        + "Storage  : " + Math.round(storage.usedPercent) + "% used (Cache 1d)\n"
-                        + "Free RAM : " + DeviceMetrics.fmt2(ram.freeGb) + " GB / " + DeviceMetrics.fmt2(ram.totalGb) + " GB\n"
-                        + "Free ROM : " + DeviceMetrics.fmt2(storage.freeGb) + " GB / " + DeviceMetrics.fmt2(storage.totalGb) + " GB"
-        );
-
-        String rssi = wifi.rssi == Integer.MIN_VALUE ? "N/A" : wifi.rssi + " dBm";
-        String speed = wifi.linkSpeedMbps < 0 ? "N/A" : wifi.linkSpeedMbps + " Mbps";
-        String freq = wifi.frequencyMhz < 0 ? "N/A" : wifi.frequencyMhz + " MHz";
-        String nearbyPermission = permissionState(Manifest.permission.NEARBY_WIFI_DEVICES, 33);
-        String locationPermission = permissionState(Manifest.permission.ACCESS_FINE_LOCATION, 23);
-        String locationService = isLocationEnabled() ? "ON" : "OFF";
-        boolean ignoringBatteryOpt = isIgnoringBatteryOptimizations();
-
-        String pingLocalSummary = String.format(Locale.US, "%d/60m (%d pkt) • Loss %.1f%% • Avg %s",
-                pingLocal.windowSamples, pingLocal.windowTx, pingLocal.windowLossPercent,
-                Double.isNaN(pingLocal.windowAvgMs) ? "N/A" : String.format(Locale.US, "%.1f ms", pingLocal.windowAvgMs));
-        String pingNetSummary = String.format(Locale.US, "%d/60m (%d pkt) • Loss %.1f%% • Avg %s",
-                pingNet.windowSamples, pingNet.windowTx, pingNet.windowLossPercent,
-                Double.isNaN(pingNet.windowAvgMs) ? "N/A" : String.format(Locale.US, "%.1f ms", pingNet.windowAvgMs));
-        String gwIp = AgentConfig.getGatewayIp(this);
-        String pingGwSummary = !AgentConfig.isValidIpv4(gwIp)
-                ? "Belum dikonfigurasi (Isi di Settings)"
-                : String.format(Locale.US, "%d/60m (%d pkt) • Loss %.1f%% • Avg %s",
-                        pingGw.windowSamples, pingGw.windowTx, pingGw.windowLossPercent,
-                        Double.isNaN(pingGw.windowAvgMs) ? "N/A" : String.format(Locale.US, "%.1f ms", pingGw.windowAvgMs));
-
-        networkSection.summary.setText((wifi.connected ? wifi.ssid : "Not Connected")
-                + " • " + rssi + " • Roam " + wifi.roamsLastHour + "x/1h");
-        networkText.setText(
-                "Wi-Fi          : " + (wifi.connected ? "Connected" : "Not Connected") + "\n"
-                        + "SSID           : " + wifi.ssid + "\n"
-                        + "AP BSSID       : " + wifi.bssid + " (" + wifi.apVendor + ")\n"
-                        + "Band / Channel : " + wifi.bandChannel + " (" + freq + ")\n"
-                        + "AP Roaming     : " + wifi.roamSummary + "\n"
-                        + "Last Roam Move : " + wifi.lastRoamReason + "\n"
-                        + "Signal / Speed : " + rssi + "  •  " + speed + "\n"
-                        + "Local IP       : " + wifi.ip + "\n"
-                        + "Ping 192.168.122.10 : " + pingLocalSummary + "\n"
-                        + "Ping 8.8.8.8        : " + pingNetSummary + "\n"
-                        + "Ping Gateway (" + AgentConfig.getGatewayIpDisplay(this) + ") : " + pingGwSummary + "\n"
-                        + "Ping Schedule  : 4x tiap 1 menit -> kirim Checkmk tiap 1 jam\n"
-                        + "Ping Retention : 30 Hari (Auto-hapus hari ke-31+ seperti CCTV)\n"
-                        + "Ping Log Path  : " + pingLocal.logFilePath + "\n"
-                        + "Fine Location  : " + locationPermission + " (Loc Service: " + locationService + ")\n"
-                        + "Nearby Wi-Fi   : " + nearbyPermission + "\n"
-                        + "Battery Opt    : " + (ignoringBatteryOpt ? "Unrestricted (Safe)" : "Optimized (Risk of sleep)")
-        );
-
-        appsSection.summary.setText(apps.totalApps + " Apps  •  " + apps.userApps + " User  •  HW/SW Ready");
-        appsText.setText(
-                "Total Packages : " + apps.totalApps + "\n"
-                        + "User Installed : " + apps.userApps + "\n"
-                        + "System Apps    : " + apps.systemApps + "\n"
-                        + "Checkmk Format : lnx_packages / inv_packages\n"
-                        + "Payload Status : Ready for HW/SW Inventory pull\n"
-                        + "Schedule       : Weekly on Sundays (Instant on 1st pull)"
-        );
-
-        deviceSection.summary.setText(device.manufacturer + " " + device.model
-                + "  •  Android " + device.androidVersion);
-        deviceText.setText(
-                "Manufacturer : " + device.manufacturer + "\n"
-                        + "Model        : " + device.model + "\n"
-                        + "Profile      : " + device.profile + "\n"
-                        + "Hardware     : " + device.hardwareSoc + " (" + device.board + ")\n"
-                        + "Architecture : " + device.arch + "\n"
-                        + "Kernel       : " + device.kernelVersion + "\n"
-                        + "Android      : " + device.androidVersion + " (SDK " + device.sdk + ")\n"
-                        + "Device uptime: " + CheckmkOutput.formatDuration(device.uptimeMs)
-        );
-
-        settingsSection.summary.setText(AgentConfig.getHostname(this) + "  •  Server "
-                + allowDisplay + "  •  GW " + AgentConfig.getGatewayIpDisplay(this) + "  •  TCP " + AgentConfig.getPort(this));
-
-        diagnosticsSection.summary.setText("Pulls " + stats.accepted + "  •  Rejected "
-                + stats.rejected + "  •  Push OK " + stats.pushSuccesses);
-        diagnosticsText.setText(
-                "Accepted pulls : " + stats.accepted + "\n"
-                        + "Rejected pulls : " + stats.rejected + "\n"
-                        + "Last rejected  : " + stats.lastRejected + "\n"
-                        + "Server Cabang  : " + allowDisplay + "\n"
-                        + "Push attempts  : " + stats.pushAttempts + "\n"
-                        + "Push successes : " + stats.pushSuccesses + "\n"
-                        + "Push failures  : " + stats.pushFailures + "\n"
-                        + "Last push code : " + stats.lastPushCode + "\n"
-                        + "Last push msg  : " + stats.lastPushMessage + "\n"
-                        + "Foreground svc : " + (stats.running ? "running" : "stopped") + "\n"
-                        + "AccuMeter smpl : " + b.estimateSamples + "\n"
-                        + "Package        : com.bcp.checkmkagent"
-        );
-    }
-
-    private TextView ensureTransportBody() {
-        if (transportSection.content.getChildCount() >= 2
-                && transportSection.content.getChildAt(1) instanceof TextView) {
-            return (TextView) transportSection.content.getChildAt(1);
-        }
-        TextView body = bodyText();
-        body.setPadding(0, dp(10), 0, 0);
-        transportSection.content.addView(body, wrap());
-        return body;
+        txtSettingsSummary.setText(String.format(Locale.US,
+                "%s  •  Server %s  •  GW %s",
+                cfg.getHostname(),
+                cfg.getAllowedServersRaw().isEmpty() ? "Open" : cfg.getAllowedServersRaw(),
+                gw.isEmpty() ? "Auto" : gw));
     }
 
     private void showPingLogDialog() {
-        showTextDialog("Log Ping Lokal 3-Baris (Retensi 30 Hari CCTV)",
-                PingMonitor.readRecentLogTail(this, 120),
-                "PING 4X NOW",
-                () -> {
-                    Toast.makeText(this, "Menjalankan ping 4x ke 192.168.122.10, 8.8.8.8, & Gateway Cabang...", Toast.LENGTH_SHORT).show();
-                    new Thread(() -> {
-                        PingMonitor.collectMinuteSample(getApplicationContext());
-                        runOnUiThread(() -> {
-                            updateDashboard();
-                            Toast.makeText(this, "Sampel ping 4x berhasil disimpan ke log HP", Toast.LENGTH_SHORT).show();
-                        });
-                    }, "cmkagent-manual-ping").start();
-                });
+        String log = NativeBridge.isLoaded()
+                ? NativeBridge.readPingLogTail(150)
+                : "NativeBridge belum termuat.";
+
+        TextView tv = new TextView(this);
+        tv.setText(log);
+        tv.setTextColor(TEXT_PRIMARY);
+        tv.setTypeface(Typeface.MONOSPACE);
+        tv.setTextSize(10.5f);
+        tv.setPadding(dp(12), dp(12), dp(12), dp(12));
+
+        ScrollView sv = new ScrollView(this);
+        sv.setBackgroundColor(BG_DARK);
+        sv.addView(tv);
+
+        new AlertDialog.Builder(this)
+                .setTitle("Log Ping Lokal 3-Baris (Retensi 30 Hari CCTV)")
+                .setView(sv)
+                .setPositiveButton("PING 4X NOW", (d, w) -> startAgentService(CheckmkAgentService.ACTION_PING_NOW))
+                .setNegativeButton("CLOSE", null)
+                .show();
     }
 
-    private void showRoamingLogDialog() {
-        showTextDialog("Log Roaming Wi-Fi AP (UniFi / Multi-AP)",
-                WifiRoamingTracker.readRecentRoamLog(this, 100),
-                null,
-                null);
+    private void saveSettings() {
+        int port = cfg.getPort();
+        int design = parseIntOr(edtDesignMah.getText().toString(), 0);
+        int cycles = parseIntOr(edtInitCycles.getText().toString(), 0);
+        int pushInt = parseIntOr(edtPushInterval.getText().toString(), 300);
+
+        cfg.save(
+                edtHostname.getText().toString(),
+                port,
+                edtAllowed.getText().toString(),
+                swAllowPrivate.isChecked(),
+                edtGateway.getText().toString(),
+                design,
+                cycles,
+                swPushEnabled.isChecked(),
+                edtPushUrl.getText().toString(),
+                edtPushToken.getText().toString(),
+                pushInt
+        );
+
+        startAgentService(CheckmkAgentService.ACTION_START_OR_RELOAD);
+        refreshDashboard();
+        Toast.makeText(this, "Konfigurasi disimpan & Rust Agent di-reload!", Toast.LENGTH_SHORT).show();
     }
 
-    private void showTextDialog(String title, String content, String neutralLabel, Runnable neutralAction) {
-        TextView text = new TextView(this);
-        text.setText(content);
-        text.setTextIsSelectable(true);
-        text.setTypeface(Typeface.MONOSPACE);
-        text.setTextColor(C_TEXT);
-        text.setTextSize(11);
-        text.setPadding(dp(16), dp(16), dp(16), dp(16));
-        text.setBackgroundColor(C_BG);
-
-        ScrollView scroller = new ScrollView(this);
-        scroller.setBackgroundColor(C_BG);
-        scroller.addView(text);
-
-        AlertDialog.Builder builder = new AlertDialog.Builder(this)
-                .setTitle(title)
-                .setView(scroller)
-                .setPositiveButton("CLOSE", null);
-        if (neutralLabel != null && neutralAction != null) {
-            builder.setNeutralButton(neutralLabel, (d, w) -> neutralAction.run());
-        }
-        AlertDialog dialog = builder.create();
-        dialog.setOnShowListener(d -> {
-            if (dialog.getButton(AlertDialog.BUTTON_POSITIVE) != null) {
-                dialog.getButton(AlertDialog.BUTTON_POSITIVE).setTextColor(C_GREEN);
-            }
-            if (dialog.getButton(AlertDialog.BUTTON_NEUTRAL) != null) {
-                dialog.getButton(AlertDialog.BUTTON_NEUTRAL).setTextColor(C_WARN);
-            }
-        });
-        dialog.show();
-    }
-
-    private void testPushNow() {
-        if (!saveConfigOnly()) return;
-        if (!AgentConfig.isPushConfigured(this)) {
-            Toast.makeText(this, "Isi Push Receiver URL dan aktifkan PUSH backup terlebih dahulu", Toast.LENGTH_LONG).show();
-            return;
-        }
-        Toast.makeText(this, "Mengirim test push...", Toast.LENGTH_SHORT).show();
-        new Thread(() -> {
-            PushClient.Result result = PushClient.pushNow(getApplicationContext());
-            runOnUiThread(() -> {
-                Toast.makeText(this, result.ok
-                        ? "Push OK (HTTP " + result.code + ")"
-                        : "Push gagal: " + result.message, Toast.LENGTH_LONG).show();
-                updateDashboard();
-            });
-        }, "cmkagent-test-push").start();
-    }
-
-    private void showAgentOutput() {
-        if (!saveConfigOnly()) return;
-        showTextDialog("Checkmk agent output", CheckmkOutput.build(this), null, null);
-        updateDashboard();
-    }
-
-    private void requestRuntimePermissionsIfNeeded() {
-        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.M) return;
-        List<String> needed = new ArrayList<>();
-        if (Build.VERSION.SDK_INT >= 33
-                && checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS)
-                != PackageManager.PERMISSION_GRANTED) {
-            needed.add(Manifest.permission.POST_NOTIFICATIONS);
-        }
-        if (Build.VERSION.SDK_INT >= 33
-                && checkSelfPermission(Manifest.permission.NEARBY_WIFI_DEVICES)
-                != PackageManager.PERMISSION_GRANTED) {
-            needed.add(Manifest.permission.NEARBY_WIFI_DEVICES);
-        }
-        if (checkSelfPermission(Manifest.permission.ACCESS_FINE_LOCATION)
-                != PackageManager.PERMISSION_GRANTED) {
-            needed.add(Manifest.permission.ACCESS_FINE_LOCATION);
-        }
-        if (!needed.isEmpty()) requestPermissions(needed.toArray(new String[0]), 1001);
-    }
-
-    private String permissionState(String permission, int minSdk) {
-        if (Build.VERSION.SDK_INT < minSdk) return "N/A";
-        return checkSelfPermission(permission) == PackageManager.PERMISSION_GRANTED
-                ? "Granted" : "Denied";
-    }
-
-    private boolean isLocationEnabled() {
-        try {
-            LocationManager lm = (LocationManager) getSystemService(LOCATION_SERVICE);
-            if (lm == null) return false;
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) return lm.isLocationEnabled();
-            return lm.isProviderEnabled(LocationManager.GPS_PROVIDER)
-                    || lm.isProviderEnabled(LocationManager.NETWORK_PROVIDER);
-        } catch (Exception ignored) {
-            return false;
+    private void startAgentService(String action) {
+        Intent svc = new Intent(this, CheckmkAgentService.class);
+        if (action != null) svc.setAction(action);
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            startForegroundService(svc);
+        } else {
+            startService(svc);
         }
     }
 
-    private boolean isIgnoringBatteryOptimizations() {
+    private void requestNeededPermissions() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
-            PowerManager pm = (PowerManager) getSystemService(POWER_SERVICE);
-            return pm != null && pm.isIgnoringBatteryOptimizations(getPackageName());
+            List<String> req = new ArrayList<>();
+            // Android 12+ (targetSdk >= 31) mewajibkan ACCESS_FINE_LOCATION dan ACCESS_COARSE_LOCATION
+            // diminta bersama dalam satu panggilan requestPermissions(); jika hanya FINE, OS menolak diam-diam.
+            if (checkSelfPermission(Manifest.permission.ACCESS_FINE_LOCATION) != PackageManager.PERMISSION_GRANTED) {
+                req.add(Manifest.permission.ACCESS_FINE_LOCATION);
+                req.add(Manifest.permission.ACCESS_COARSE_LOCATION);
+            }
+            if (Build.VERSION.SDK_INT >= 33
+                    && checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
+                req.add(Manifest.permission.POST_NOTIFICATIONS);
+            }
+            if (!req.isEmpty()) {
+                requestPermissions(req.toArray(new String[0]), 101);
+            }
         }
-        return true;
     }
 
-    private void requestIgnoreBatteryOptimizations() {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+    private void handleFixWifiLocation() {
+        if (!DeviceMetrics.hasFineLocationPermission(this)) {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+                requestPermissions(new String[]{
+                        Manifest.permission.ACCESS_FINE_LOCATION,
+                        Manifest.permission.ACCESS_COARSE_LOCATION
+                }, 102);
+            }
+        } else if (!DeviceMetrics.isLocationServiceEnabled(this)) {
             try {
-                Intent intent = new Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS);
-                intent.setData(Uri.parse("package:" + getPackageName()));
-                startActivity(intent);
-            } catch (Exception e) {
-                openAppSettings();
-            }
+                startActivity(new Intent(Settings.ACTION_LOCATION_SOURCE_SETTINGS));
+                Toast.makeText(this, "Aktifkan Lokasi/GPS agar Android mengizinkan pembacaan SSID & BSSID Wi-Fi", Toast.LENGTH_LONG).show();
+            } catch (Throwable ignored) {}
         }
     }
 
-    private void openAppSettings() {
-        Intent intent = new Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
-                Uri.parse("package:" + getPackageName()));
-        startActivity(intent);
+    @Override
+    public void onRequestPermissionsResult(int requestCode, String[] permissions, int[] grantResults) {
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults);
+        refreshDashboard();
+        startAgentService(CheckmkAgentService.ACTION_START_OR_RELOAD);
+        if (requestCode == 102 && !DeviceMetrics.hasFineLocationPermission(this)) {
+            try {
+                Intent i = new Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS);
+                i.setData(Uri.fromParts("package", getPackageName(), null));
+                startActivity(i);
+                Toast.makeText(this, "Pilih Izin (Permissions) -> Lokasi -> Izinkan & aktifkan Lokasi Akurat (Precise)", Toast.LENGTH_LONG).show();
+            } catch (Throwable ignored) {}
+        }
     }
 
-    private EditText input(LinearLayout parent, String label, int type, String hint) {
-        TextView l = new TextView(this);
-        l.setText(label);
-        l.setTextColor(C_MUTED);
-        l.setTextSize(12);
-        l.setTypeface(Typeface.DEFAULT_BOLD);
-        l.setPadding(0, dp(6), 0, dp(3));
-        parent.addView(l, wrap());
+    private CollapsibleCard createCollapsibleCard(
+            LinearLayout parent,
+            String title,
+            String subtitle,
+            TextView summaryView,
+            boolean initialExpanded
+    ) {
+        LinearLayout card = new LinearLayout(this);
+        card.setOrientation(LinearLayout.VERTICAL);
+        card.setPadding(dp(14), dp(12), dp(14), dp(12));
 
-        EditText e = new EditText(this);
-        e.setSingleLine(true);
-        e.setInputType(type);
-        e.setTextColor(C_TEXT);
-        e.setHintTextColor(Color.rgb(102, 119, 133));
-        e.setHint(hint);
-        e.setTextSize(15);
-        e.setPadding(dp(12), 0, dp(12), 0);
-        e.setBackground(rounded(C_CARD_ALT, 10, C_LINE, 1));
-        parent.addView(e, matchHeightMargin(48, 0, 0, 0, 8));
-        return e;
+        GradientDrawable gd = new GradientDrawable();
+        gd.setColor(CARD_BG);
+        gd.setCornerRadius(dp(10));
+        gd.setStroke(dp(1), CARD_BORDER);
+        card.setBackground(gd);
+
+        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT);
+        lp.bottomMargin = dp(10);
+        card.setLayoutParams(lp);
+
+        // Header Row (Title + Subtitle on left, Chevron on right)
+        LinearLayout headerClickArea = new LinearLayout(this);
+        headerClickArea.setOrientation(LinearLayout.VERTICAL);
+
+        LinearLayout topRow = new LinearLayout(this);
+        topRow.setOrientation(LinearLayout.HORIZONTAL);
+        topRow.setGravity(Gravity.CENTER_VERTICAL);
+
+        LinearLayout titleWrap = new LinearLayout(this);
+        titleWrap.setOrientation(LinearLayout.VERTICAL);
+
+        TextView tTitle = new TextView(this);
+        tTitle.setText(title);
+        tTitle.setTextColor(ACCENT_GREEN);
+        tTitle.setTextSize(12);
+        tTitle.setTypeface(null, Typeface.BOLD);
+        titleWrap.addView(tTitle);
+
+        TextView tSub = new TextView(this);
+        tSub.setText(subtitle);
+        tSub.setTextColor(TEXT_MUTED);
+        tSub.setTextSize(11);
+        tSub.setPadding(0, 0, 0, dp(6));
+        titleWrap.addView(tSub);
+
+        topRow.addView(titleWrap, new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
+
+        TextView chevron = new TextView(this);
+        chevron.setTextColor(TEXT_MUTED);
+        chevron.setTextSize(16);
+        chevron.setPadding(dp(8), 0, dp(4), 0);
+        topRow.addView(chevron);
+
+        headerClickArea.addView(topRow);
+        headerClickArea.addView(summaryView);
+        card.addView(headerClickArea);
+
+        LinearLayout body = new LinearLayout(this);
+        body.setOrientation(LinearLayout.VERTICAL);
+        body.setPadding(0, dp(8), 0, 0);
+        card.addView(body);
+
+        CollapsibleCard cc = new CollapsibleCard(card, body, chevron, initialExpanded);
+        headerClickArea.setOnClickListener(v -> cc.toggle());
+        allCards.add(cc);
+
+        parent.addView(card);
+        return cc;
     }
 
-    private TextView bodyText() {
-        TextView v = new TextView(this);
-        v.setTextColor(C_TEXT);
-        v.setTextSize(14);
-        v.setLineSpacing(0, 1.15f);
-        return v;
+    private TextView makeSummaryText(String text) {
+        TextView tv = new TextView(this);
+        tv.setText(text);
+        tv.setTextColor(TEXT_PRIMARY);
+        tv.setTextSize(13.5f);
+        tv.setTypeface(null, Typeface.BOLD);
+        return tv;
     }
 
-    private TextView badge(String text, int color) {
-        TextView v = new TextView(this);
-        v.setText(text);
-        v.setTextSize(12);
-        v.setTypeface(Typeface.DEFAULT_BOLD);
-        v.setPadding(dp(10), dp(5), dp(10), dp(5));
-        styleBadge(v, color);
-        return v;
+    private TextView makeMonoText(String text) {
+        TextView tv = new TextView(this);
+        tv.setText(text);
+        tv.setTextColor(TEXT_PRIMARY);
+        tv.setTypeface(Typeface.MONOSPACE);
+        tv.setTextSize(12);
+        return tv;
     }
 
-    private void styleBadge(TextView v, int color) {
-        v.setTextColor(color);
-        v.setBackground(rounded(withAlpha(color, 35), 20, withAlpha(color, 110), 1));
-    }
-
-    private Button actionButton(String text, int bg, int fg) {
+    private Button makeTopBarButton(String label, int textColor, String bgHex, String strokeHex) {
         Button b = new Button(this);
-        b.setText(text);
-        b.setTextColor(fg);
-        b.setTextSize(12);
-        b.setTypeface(Typeface.DEFAULT_BOLD);
-        b.setAllCaps(false);
+        b.setText(label);
+        b.setTextColor(textColor);
+        b.setTextSize(11.5f);
+        b.setTypeface(null, Typeface.BOLD);
+        GradientDrawable gd = new GradientDrawable();
+        gd.setColor(Color.parseColor(bgHex));
+        gd.setCornerRadius(dp(8));
+        gd.setStroke(dp(1), Color.parseColor(strokeHex));
+        b.setBackground(gd);
         b.setGravity(Gravity.CENTER);
-        b.setMinHeight(0);
-        b.setMinimumHeight(0);
-        b.setBackground(rounded(bg, 11, C_LINE, 1));
+        b.setPadding(dp(8), 0, dp(8), 0);
         return b;
     }
 
-    private GradientDrawable rounded(int color, int radiusDp, int strokeColor, int strokeDp) {
-        GradientDrawable d = new GradientDrawable();
-        d.setColor(color);
-        d.setCornerRadius(dp(radiusDp));
-        if (strokeDp > 0) d.setStroke(dp(strokeDp), strokeColor);
-        return d;
+    private Button makeActionButton(String label) {
+        Button b = new Button(this);
+        b.setText(label);
+        b.setTextColor(ACCENT_GREEN);
+        b.setTextSize(12);
+        GradientDrawable gd = new GradientDrawable();
+        gd.setColor(Color.parseColor("#182930"));
+        gd.setCornerRadius(dp(6));
+        gd.setStroke(dp(1), Color.parseColor("#2A4450"));
+        b.setBackground(gd);
+        b.setGravity(Gravity.CENTER);
+        return b;
     }
 
-    private int withAlpha(int color, int alpha) {
-        return Color.argb(alpha, Color.red(color), Color.green(color), Color.blue(color));
+    private Button makeDangerButton(String label) {
+        Button b = new Button(this);
+        b.setText(label);
+        b.setTextColor(ACCENT_RED);
+        b.setTextSize(12);
+        GradientDrawable gd = new GradientDrawable();
+        gd.setColor(Color.parseColor("#2D1618"));
+        gd.setCornerRadius(dp(6));
+        gd.setStroke(dp(1), ACCENT_RED);
+        b.setBackground(gd);
+        b.setGravity(Gravity.CENTER);
+        return b;
     }
 
-    private View space(int heightDp) {
-        View v = new View(this);
-        v.setLayoutParams(new LinearLayout.LayoutParams(1, dp(heightDp)));
-        return v;
+    private EditText addSettingField(LinearLayout parent, String label, String value, int inputType) {
+        TextView lbl = new TextView(this);
+        lbl.setText(label);
+        lbl.setTextColor(TEXT_MUTED);
+        lbl.setTextSize(11);
+        lbl.setPadding(0, dp(6), 0, dp(2));
+        parent.addView(lbl);
+
+        EditText et = new EditText(this);
+        et.setText(value);
+        et.setTextColor(TEXT_PRIMARY);
+        et.setInputType(inputType);
+        et.setTextSize(13);
+        et.setPadding(dp(10), dp(8), dp(10), dp(8));
+        GradientDrawable gd = new GradientDrawable();
+        gd.setColor(Color.parseColor("#0F191E"));
+        gd.setCornerRadius(dp(6));
+        gd.setStroke(dp(1), CARD_BORDER);
+        et.setBackground(gd);
+        parent.addView(et);
+        return et;
     }
 
-    private LinearLayout.LayoutParams wrap() {
-        return new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.WRAP_CONTENT,
-                ViewGroup.LayoutParams.WRAP_CONTENT);
+    private int parseIntOr(String s, int def) {
+        try {
+            return Integer.parseInt(s.trim());
+        } catch (Throwable ignored) {
+            return def;
+        }
     }
 
-    private LinearLayout.LayoutParams matchWrap() {
-        return new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT,
-                ViewGroup.LayoutParams.WRAP_CONTENT);
-    }
-
-    private LinearLayout.LayoutParams matchWrapMargin(int left, int top, int right, int bottom) {
-        LinearLayout.LayoutParams p = matchWrap();
-        p.setMargins(dp(left), dp(top), dp(right), dp(bottom));
-        return p;
-    }
-
-    private LinearLayout.LayoutParams matchHeightMargin(
-            int height, int left, int top, int right, int bottom) {
-        LinearLayout.LayoutParams p = new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, dp(height));
-        p.setMargins(dp(left), dp(top), dp(right), dp(bottom));
-        return p;
-    }
-
-    private LinearLayout.LayoutParams weightButton() {
-        return new LinearLayout.LayoutParams(0, dp(48), 1f);
-    }
-
-    private int dp(int value) {
-        return Math.round(value * getResources().getDisplayMetrics().density);
-    }
-
-    private String formatDate(long millis) {
-        return new SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.getDefault())
-                .format(new Date(millis));
-    }
-
-    private static final class Section {
-        LinearLayout card;
-        LinearLayout content;
-        TextView arrow;
-        TextView summary;
-        boolean expanded;
+    private int dp(int v) {
+        return Math.round(v * getResources().getDisplayMetrics().density);
     }
 }

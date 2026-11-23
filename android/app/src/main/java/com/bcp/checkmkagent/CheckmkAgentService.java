@@ -5,297 +5,191 @@ import android.app.NotificationChannel;
 import android.app.NotificationManager;
 import android.app.PendingIntent;
 import android.app.Service;
-import android.content.BroadcastReceiver;
 import android.content.Context;
 import android.content.Intent;
-import android.content.IntentFilter;
+import android.content.pm.ServiceInfo;
 import android.net.wifi.WifiManager;
 import android.os.Build;
 import android.os.IBinder;
 import android.os.PowerManager;
 
-import java.io.BufferedWriter;
-import java.io.OutputStreamWriter;
-import java.net.InetSocketAddress;
-import java.net.ServerSocket;
-import java.net.Socket;
-import java.nio.charset.StandardCharsets;
-import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
 
 public class CheckmkAgentService extends Service {
-    public static final String CHANNEL_ID = "cmkagent_service";
-    private static final int NOTIFICATION_ID = 6556;
+    public static final String ACTION_START_OR_RELOAD = "com.bcp.checkmkagent.START_OR_RELOAD";
+    public static final String ACTION_STOP_SERVICE = "com.bcp.checkmkagent.STOP_SERVICE";
+    public static final String ACTION_PING_NOW = "com.bcp.checkmkagent.PING_NOW";
+    public static final String ACTION_PUSH_NOW = "com.bcp.checkmkagent.PUSH_NOW";
 
-    private volatile boolean running = false;
-    private ServerSocket serverSocket;
-    private ExecutorService listenerExecutor;
-    private ExecutorService clientWorkerExecutor;
-    private ScheduledExecutorService pushExecutor;
-    private ScheduledExecutorService monitorExecutor;
-    private BroadcastReceiver hardwareEventReceiver;
+    private static final String CHANNEL_ID = "cmkagent_rust_fg";
+    private static final int NOTIF_ID = 6556;
+    private static volatile boolean running = false;
 
+    private ScheduledExecutorService scheduler;
     private PowerManager.WakeLock wakeLock;
     private WifiManager.WifiLock wifiLock;
+    private long lastPushElapsedMs = 0L;
+
+    public static boolean isRunning() {
+        return running;
+    }
 
     @Override
     public void onCreate() {
         super.onCreate();
         createNotificationChannel();
+        acquireLocks();
+        running = true;
+
+        AgentConfig cfg = new AgentConfig(this);
+        String dataDir = getFilesDir().getAbsolutePath();
+
+        if (NativeBridge.isLoaded()) {
+            NativeBridge.startPullServer(cfg.toNativeConfigJson(), dataDir);
+            String snap = DeviceMetrics.buildSnapshotJson(this, cfg);
+            NativeBridge.updateSnapshot(snap);
+        }
+
+        startScheduler();
     }
 
     @Override
     public int onStartCommand(Intent intent, int flags, int startId) {
-        startForeground(NOTIFICATION_ID, buildNotification("Starting hybrid agent..."));
-        startHybridIfNeeded();
+        String action = intent != null ? intent.getAction() : null;
+        if (ACTION_STOP_SERVICE.equals(action)) {
+            stopAgentEngine();
+            stopForeground(true);
+            stopSelf();
+            return START_NOT_STICKY;
+        }
+
+        running = true;
+        AgentConfig cfg = new AgentConfig(this);
+        String mode = cfg.isAllowAllPrivate() ? "Open" : "Restricted";
+        Notification notif = buildNotification(cfg.getHostname(), mode);
+
+        if (Build.VERSION.SDK_INT >= 29) {
+            startForeground(NOTIF_ID, notif, ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC);
+        } else {
+            startForeground(NOTIF_ID, notif);
+        }
+
+        if (scheduler == null || scheduler.isShutdown()) {
+            startScheduler();
+        }
+
+        if (ACTION_START_OR_RELOAD.equals(action) && NativeBridge.isLoaded()) {
+            NativeBridge.startPullServer(cfg.toNativeConfigJson(), getFilesDir().getAbsolutePath());
+            if (scheduler != null) {
+                scheduler.execute(() -> {
+                    String snap = DeviceMetrics.buildSnapshotJson(this, cfg);
+                    NativeBridge.updateSnapshot(snap);
+                });
+            }
+        } else if (ACTION_PING_NOW.equals(action) && scheduler != null && NativeBridge.isLoaded()) {
+            scheduler.execute(() -> NativeBridge.collectPingSample(cfg.getGatewayIp()));
+        } else if (ACTION_PUSH_NOW.equals(action) && scheduler != null && NativeBridge.isLoaded()) {
+            scheduler.execute(() -> performPush(cfg));
+        }
+
         return START_STICKY;
     }
 
-    private synchronized void startHybridIfNeeded() {
-        if (running) return;
-        running = true;
-        acquireLocks();
-        AgentStats.recordStart(this);
-        registerHardwareReceiver();
-        startPullListener();
-        startMinuteMonitorScheduler();
-        startPushScheduler();
-    }
-
-    private void registerHardwareReceiver() {
-        if (hardwareEventReceiver != null) return;
-        hardwareEventReceiver = new BroadcastReceiver() {
-            @Override
-            public void onReceive(Context context, Intent intent) {
-                if (!running || intent == null) return;
-                String action = intent.getAction();
-                if (Intent.ACTION_BATTERY_CHANGED.equals(action)
-                        || Intent.ACTION_POWER_CONNECTED.equals(action)
-                        || Intent.ACTION_POWER_DISCONNECTED.equals(action)) {
-                    try {
-                        DeviceMetrics.readBattery(getApplicationContext());
-                    } catch (Throwable ignored) {}
-                } else if (WifiManager.NETWORK_STATE_CHANGED_ACTION.equals(action)
-                        || WifiManager.RSSI_CHANGED_ACTION.equals(action)) {
-                    try {
-                        DeviceMetrics.readWifi(getApplicationContext());
-                    } catch (Throwable ignored) {}
-                }
-            }
-        };
-        try {
-            IntentFilter filter = new IntentFilter();
-            filter.addAction(Intent.ACTION_BATTERY_CHANGED);
-            filter.addAction(Intent.ACTION_POWER_CONNECTED);
-            filter.addAction(Intent.ACTION_POWER_DISCONNECTED);
-            filter.addAction(WifiManager.NETWORK_STATE_CHANGED_ACTION);
-            filter.addAction(WifiManager.RSSI_CHANGED_ACTION);
-            registerReceiver(hardwareEventReceiver, filter);
-        } catch (Throwable ignored) {}
-    }
-
-    private void unregisterHardwareReceiver() {
-        if (hardwareEventReceiver != null) {
+    private void startScheduler() {
+        if (scheduler != null && !scheduler.isShutdown()) {
+            scheduler.shutdownNow();
+        }
+        scheduler = Executors.newSingleThreadScheduledExecutor();
+        scheduler.scheduleAtFixedRate(() -> {
             try {
-                unregisterReceiver(hardwareEventReceiver);
+                if (!running || !NativeBridge.isLoaded()) return;
+                AgentConfig cfg = new AgentConfig(this);
+                NativeBridge.updateConfig(cfg.toNativeConfigJson());
+                String snap = DeviceMetrics.buildSnapshotJson(this, cfg);
+                NativeBridge.updateSnapshot(snap);
+                NativeBridge.collectPingSample(cfg.getGatewayIp());
+
+                if (cfg.isPushEnabled() && !cfg.getPushUrl().trim().isEmpty()) {
+                    long now = System.currentTimeMillis();
+                    if (now - lastPushElapsedMs >= cfg.getPushIntervalSec() * 1000L) {
+                        performPush(cfg);
+                        lastPushElapsedMs = now;
+                    }
+                }
             } catch (Throwable ignored) {}
-            hardwareEventReceiver = null;
+        }, 1, 60, TimeUnit.SECONDS);
+    }
+
+    private void performPush(AgentConfig cfg) {
+        String payload = NativeBridge.buildFullPayload();
+        if (payload != null && !payload.isEmpty()) {
+            PushClient.pushNow(cfg, payload);
         }
     }
 
-    /**
-     * Runs every 1 minute (60s):
-     * 1) Pings 192.168.122.10 (4x) and 8.8.8.8 (4x), saves to persistent phone log,
-     *    and publishes 1-hour summary to Checkmk every 60 minutes.
-     * 2) Samples Battery (for continuous cycle counting) and Wi-Fi (for AP roaming tracking).
-     */
-    private void startMinuteMonitorScheduler() {
-        monitorExecutor = Executors.newSingleThreadScheduledExecutor();
-        monitorExecutor.scheduleAtFixedRate(() -> {
-            if (!running) return;
-            try {
-                DeviceMetrics.readBattery(getApplicationContext());
-                DeviceMetrics.readWifi(getApplicationContext());
-                PingMonitor.collectMinuteSample(getApplicationContext());
-            } catch (Throwable ignored) {}
-        }, 3, 60, TimeUnit.SECONDS);
+    private void createNotificationChannel() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            NotificationChannel ch = new NotificationChannel(
+                    CHANNEL_ID, "BMS Monitoring Service", NotificationManager.IMPORTANCE_LOW);
+            ch.setDescription("Agen BMS Monitoring & 4x/1m ping monitor");
+            NotificationManager nm = (NotificationManager) getSystemService(Context.NOTIFICATION_SERVICE);
+            if (nm != null) nm.createNotificationChannel(ch);
+        }
+    }
+
+    private Notification buildNotification(String host, String mode) {
+        Intent i = new Intent(this, MainActivity.class);
+        PendingIntent pi = PendingIntent.getActivity(this, 0, i,
+                PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE);
+
+        Notification.Builder nb = Build.VERSION.SDK_INT >= Build.VERSION_CODES.O
+                ? new Notification.Builder(this, CHANNEL_ID)
+                : new Notification.Builder(this);
+
+        return nb.setSmallIcon(R.drawable.ic_stat_cmkagent)
+                .setContentTitle("Agen BMS ACTIVE (" + host + ")")
+                .setContentText("Status: " + mode + " • Pull Primary")
+                .setContentIntent(pi)
+                .setOngoing(true)
+                .build();
     }
 
     private void acquireLocks() {
         try {
             PowerManager pm = (PowerManager) getSystemService(Context.POWER_SERVICE);
             if (pm != null && (wakeLock == null || !wakeLock.isHeld())) {
-                wakeLock = pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "cmkagent:service_wakelock");
+                wakeLock = pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "cmkagent:WakeLock");
                 wakeLock.acquire();
             }
-        } catch (Throwable ignored) {}
-
-        try {
             WifiManager wm = (WifiManager) getApplicationContext().getSystemService(Context.WIFI_SERVICE);
             if (wm != null && (wifiLock == null || !wifiLock.isHeld())) {
-                wifiLock = wm.createWifiLock(WifiManager.WIFI_MODE_FULL_HIGH_PERF, "cmkagent:service_wifilock");
+                wifiLock = wm.createWifiLock(WifiManager.WIFI_MODE_FULL_HIGH_PERF, "cmkagent:WifiLock");
                 wifiLock.acquire();
             }
         } catch (Throwable ignored) {}
     }
 
-    private void releaseLocks() {
-        try {
-            if (wakeLock != null && wakeLock.isHeld()) {
-                wakeLock.release();
-            }
-        } catch (Throwable ignored) {}
-        wakeLock = null;
-
-        try {
-            if (wifiLock != null && wifiLock.isHeld()) {
-                wifiLock.release();
-            }
-        } catch (Throwable ignored) {}
-        wifiLock = null;
-    }
-
-    private void startPullListener() {
-        listenerExecutor = Executors.newSingleThreadExecutor();
-        clientWorkerExecutor = Executors.newCachedThreadPool();
-
-        listenerExecutor.execute(() -> {
-            int port = AgentConfig.getPort(this);
-            try {
-                serverSocket = new ServerSocket();
-                serverSocket.setReuseAddress(true);
-                serverSocket.bind(new InetSocketAddress("0.0.0.0", port));
-                updateNotification(notificationSummary());
-
-                while (running) {
-                    try {
-                        Socket client = serverSocket.accept();
-                        client.setSoTimeout(5000);
-                        clientWorkerExecutor.execute(() -> serveClient(client));
-                    } catch (Exception e) {
-                        if (running) updateNotification("Pull error: " + shortMessage(e));
-                    }
-                }
-            } catch (Exception e) {
-                updateNotification("Pull listener error: " + shortMessage(e));
-            } finally {
-                closeServerSocket();
-            }
-        });
-    }
-
-    private void startPushScheduler() {
-        pushExecutor = Executors.newSingleThreadScheduledExecutor();
-        int interval = AgentConfig.getPushIntervalSec(this);
-        pushExecutor.scheduleWithFixedDelay(() -> {
-            if (!running || !AgentConfig.isPushConfigured(this)) return;
-            PushClient.Result result = PushClient.pushNow(this);
-            if (running) {
-                updateNotification(result.ok
-                        ? notificationSummary()
-                        : "Pull primary active • Push backup failed: " + shortText(result.message));
-            }
-        }, 8, interval, TimeUnit.SECONDS);
-    }
-
-    private void serveClient(Socket client) {
-        String rawRemoteIp = client.getInetAddress() == null
-                ? "unknown" : client.getInetAddress().getHostAddress();
-        String remoteIp = AgentConfig.normalizeRemoteIp(rawRemoteIp);
-        if (remoteIp.isEmpty()) remoteIp = rawRemoteIp;
-
-        if (!AgentConfig.isClientAllowed(this, remoteIp)) {
-            AgentStats.recordRejected(this, remoteIp);
-            try { client.close(); } catch (Exception ignored) {}
-            return;
+    private void stopAgentEngine() {
+        running = false;
+        if (scheduler != null) {
+            scheduler.shutdownNow();
+            scheduler = null;
         }
-
-        AgentStats.recordAccepted(this, remoteIp);
-        try (Socket socket = client;
-             BufferedWriter writer = new BufferedWriter(
-                     new OutputStreamWriter(socket.getOutputStream(), StandardCharsets.UTF_8))) {
-            writer.write(CheckmkOutput.build(this));
-            writer.flush();
-            updateNotification(notificationSummary());
-        } catch (Exception ignored) {}
+        if (NativeBridge.isLoaded()) {
+            NativeBridge.stopPullServer();
+        }
+        try {
+            if (wakeLock != null && wakeLock.isHeld()) wakeLock.release();
+            if (wifiLock != null && wifiLock.isHeld()) wifiLock.release();
+        } catch (Throwable ignored) {}
     }
 
     @Override
     public void onDestroy() {
-        running = false;
-        AgentStats.recordStop(this);
-        unregisterHardwareReceiver();
-        closeServerSocket();
-        if (listenerExecutor != null) listenerExecutor.shutdownNow();
-        if (clientWorkerExecutor != null) clientWorkerExecutor.shutdownNow();
-        if (monitorExecutor != null) monitorExecutor.shutdownNow();
-        if (pushExecutor != null) pushExecutor.shutdownNow();
-        releaseLocks();
+        stopAgentEngine();
         super.onDestroy();
-    }
-
-    private String notificationSummary() {
-        String allow = AgentConfig.getAllowedServerDisplay(this);
-        return "TCP/" + AgentConfig.getPort(this) + " (" + allow + ") • Ping 4x/1m";
-    }
-
-    private void closeServerSocket() {
-        try {
-            if (serverSocket != null) serverSocket.close();
-        } catch (Exception ignored) {}
-    }
-
-    private void createNotificationChannel() {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            NotificationManager nm = getSystemService(NotificationManager.class);
-            if (nm != null) {
-                NotificationChannel channel = new NotificationChannel(
-                        CHANNEL_ID,
-                        "cmkagent hybrid service",
-                        NotificationManager.IMPORTANCE_LOW
-                );
-                channel.setDescription("Checkmk Android hybrid agent: pull primary, ping monitor, and push backup");
-                nm.createNotificationChannel(channel);
-            }
-        }
-    }
-
-    private Notification buildNotification(String text) {
-        Intent open = new Intent(this, MainActivity.class);
-        PendingIntent pi = PendingIntent.getActivity(
-                this, 0, open,
-                PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE
-        );
-
-        Notification.Builder builder = Build.VERSION.SDK_INT >= Build.VERSION_CODES.O
-                ? new Notification.Builder(this, CHANNEL_ID)
-                : new Notification.Builder(this);
-
-        return builder
-                .setContentTitle("cmkagent v" + CheckmkOutput.VERSION)
-                .setContentText(text)
-                .setSmallIcon(R.drawable.ic_stat_cmkagent)
-                .setContentIntent(pi)
-                .setOngoing(true)
-                .build();
-    }
-
-    private void updateNotification(String text) {
-        NotificationManager nm = (NotificationManager) getSystemService(NOTIFICATION_SERVICE);
-        if (nm != null) nm.notify(NOTIFICATION_ID, buildNotification(text));
-    }
-
-    private static String shortMessage(Exception e) {
-        String m = e.getMessage();
-        return m == null || m.isEmpty() ? e.getClass().getSimpleName() : m;
-    }
-
-    private static String shortText(String value) {
-        if (value == null || value.trim().isEmpty()) return "unknown";
-        String clean = value.trim().replace('\n', ' ').replace('\r', ' ');
-        return clean.length() > 70 ? clean.substring(0, 70) : clean;
     }
 
     @Override
