@@ -255,9 +255,9 @@ Hostname: <HOSTNAME_PDA>
 cargo test --manifest-path android/rust/Cargo.toml -p cmkagent-core
 
 # 2. Kompilasi library native Rust JNI untuk ketiga arsitektur Android
-cargo ndk -t arm64-v8a -t armeabi-v7a -t x86_64 \
-  -o android/app/src/main/jniLibs \
-  build --manifest-path android/rust/Cargo.toml -p cmkagent-android-jni --release
+(cd android/rust && cargo ndk -t arm64-v8a -t armeabi-v7a -t x86_64 \
+  -o ../app/src/main/jniLibs \
+  build -p cmkagent-android-jni --release)
 
 # 3. Build APK Stabil (Release) & Debug menggunakan Gradle
 cd android
