@@ -12,6 +12,7 @@ import android.location.LocationManager;
 import android.net.ConnectivityManager;
 import android.net.Network;
 import android.net.NetworkCapabilities;
+import android.net.TrafficStats;
 import android.net.TransportInfo;
 import android.net.wifi.ScanResult;
 import android.net.wifi.SupplicantState;
@@ -27,7 +28,12 @@ import org.json.JSONArray;
 import org.json.JSONObject;
 
 import java.io.BufferedReader;
+import java.io.File;
 import java.io.FileReader;
+import java.io.FileWriter;
+import java.text.SimpleDateFormat;
+import java.util.ArrayList;
+import java.util.Date;
 import java.util.List;
 import java.util.Locale;
 
@@ -74,6 +80,179 @@ public class DeviceMetrics {
         public int totalApps;
         public int userApps;
         public int systemApps;
+    }
+
+    public static class NetworkTrafficSnapshot {
+        public long rxTotalBytes;
+        public long txTotalBytes;
+        public long rxRateBps;
+        public long txRateBps;
+        public String rxTotalHuman = "0.00 KB";
+        public String txTotalHuman = "0.00 KB";
+        public String rxRateHuman = "0 B/s";
+        public String txRateHuman = "0 B/s";
+    }
+
+    public static final String TRAFFIC_CSV_FILE = "network_traffic.csv";
+    private static final long MAX_TRAFFIC_CSV_BYTES = 5L * 1024L * 1024L; // 5 MB rolling CSV
+    private static long prevSampleRxBytes = -1L;
+    private static long prevSampleTxBytes = -1L;
+    private static long prevSampleElapsedMs = 0L;
+    private static long lastCsvAppendWallMs = 0L;
+    private static NetworkTrafficSnapshot latestTraffic = null;
+
+    public static synchronized NetworkTrafficSnapshot sampleNetworkTraffic(Context ctx, String ip, String ssid) {
+        long rawRx = TrafficStats.getTotalRxBytes();
+        long rawTx = TrafficStats.getTotalTxBytes();
+        long rx = rawRx < 0 ? 0L : rawRx;
+        long tx = rawTx < 0 ? 0L : rawTx;
+        long nowElapsed = SystemClock.elapsedRealtime();
+
+        long rxRate = 0L;
+        long txRate = 0L;
+        if (prevSampleRxBytes >= 0 && prevSampleTxBytes >= 0 && nowElapsed > prevSampleElapsedMs) {
+            double dtSec = (nowElapsed - prevSampleElapsedMs) / 1000.0;
+            if (dtSec >= 1.0) {
+                long dRx = rx >= prevSampleRxBytes ? (rx - prevSampleRxBytes) : 0L;
+                long dTx = tx >= prevSampleTxBytes ? (tx - prevSampleTxBytes) : 0L;
+                rxRate = Math.round(dRx / dtSec);
+                txRate = Math.round(dTx / dtSec);
+            } else if (latestTraffic != null) {
+                rxRate = latestTraffic.rxRateBps;
+                txRate = latestTraffic.txRateBps;
+            }
+        }
+        if (prevSampleRxBytes < 0 || (nowElapsed - prevSampleElapsedMs) >= 1000L) {
+            prevSampleRxBytes = rx;
+            prevSampleTxBytes = tx;
+            prevSampleElapsedMs = nowElapsed;
+        }
+
+        NetworkTrafficSnapshot snap = new NetworkTrafficSnapshot();
+        snap.rxTotalBytes = rx;
+        snap.txTotalBytes = tx;
+        snap.rxRateBps = rxRate;
+        snap.txRateBps = txRate;
+        snap.rxTotalHuman = formatBytesHuman(rx);
+        snap.txTotalHuman = formatBytesHuman(tx);
+        snap.rxRateHuman = formatRateHuman(rxRate);
+        snap.txRateHuman = formatRateHuman(txRate);
+        latestTraffic = snap;
+
+        long nowWall = System.currentTimeMillis();
+        if (ctx != null && (nowWall - lastCsvAppendWallMs) >= 25_000L) {
+            lastCsvAppendWallMs = nowWall;
+            appendTrafficCsv(ctx, nowWall, ip, ssid, snap);
+        }
+        return snap;
+    }
+
+    public static synchronized NetworkTrafficSnapshot peekNetworkTraffic(Context ctx) {
+        long rawRx = TrafficStats.getTotalRxBytes();
+        long rawTx = TrafficStats.getTotalTxBytes();
+        long rx = rawRx < 0 ? 0L : rawRx;
+        long tx = rawTx < 0 ? 0L : rawTx;
+        NetworkTrafficSnapshot snap = new NetworkTrafficSnapshot();
+        snap.rxTotalBytes = rx;
+        snap.txTotalBytes = tx;
+        snap.rxRateBps = latestTraffic != null ? latestTraffic.rxRateBps : 0L;
+        snap.txRateBps = latestTraffic != null ? latestTraffic.txRateBps : 0L;
+        snap.rxTotalHuman = formatBytesHuman(rx);
+        snap.txTotalHuman = formatBytesHuman(tx);
+        snap.rxRateHuman = formatRateHuman(snap.rxRateBps);
+        snap.txRateHuman = formatRateHuman(snap.txRateBps);
+        return snap;
+    }
+
+    private static void appendTrafficCsv(Context ctx, long wallMs, String ip, String ssid, NetworkTrafficSnapshot s) {
+        try {
+            File csvFile = new File(ctx.getFilesDir(), TRAFFIC_CSV_FILE);
+            if (csvFile.exists() && csvFile.length() > MAX_TRAFFIC_CSV_BYTES) {
+                pruneTrafficCsv(csvFile);
+            }
+            boolean writeHeader = !csvFile.exists() || csvFile.length() == 0L;
+            String ts = new SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.US).format(new Date(wallMs));
+            String safeIp = (ip == null ? "0.0.0.0" : ip).replace(",", ";");
+            String safeSsid = (ssid == null ? "N/A" : ssid).replace(",", " ").replace("\"", "");
+            try (FileWriter fw = new FileWriter(csvFile, true)) {
+                if (writeHeader) {
+                    fw.write("timestamp,ip_address,ssid,rx_total_bytes,tx_total_bytes,rx_rate_bps,tx_rate_bps,rx_total,tx_total,rx_rate,tx_rate\n");
+                }
+                fw.write(String.format(Locale.US,
+                        "%s,%s,%s,%d,%d,%d,%d,%s,%s,%s,%s\n",
+                        ts, safeIp, safeSsid,
+                        s.rxTotalBytes, s.txTotalBytes, s.rxRateBps, s.txRateBps,
+                        s.rxTotalHuman, s.txTotalHuman, s.rxRateHuman, s.txRateHuman));
+            }
+        } catch (Throwable ignored) {}
+    }
+
+    private static void pruneTrafficCsv(File csvFile) {
+        try {
+            List<String> lines = new ArrayList<>();
+            try (BufferedReader br = new BufferedReader(new FileReader(csvFile))) {
+                String line;
+                while ((line = br.readLine()) != null) {
+                    lines.add(line);
+                }
+            }
+            if (lines.size() <= 2) return;
+            String header = lines.get(0);
+            int startIdx = Math.max(1, lines.size() / 2);
+            try (FileWriter fw = new FileWriter(csvFile, false)) {
+                fw.write(header + "\n");
+                for (int i = startIdx; i < lines.size(); i++) {
+                    fw.write(lines.get(i) + "\n");
+                }
+            }
+        } catch (Throwable ignored) {}
+    }
+
+    public static String readTrafficCsvTail(Context ctx, int maxLines) {
+        try {
+            File csvFile = new File(ctx.getFilesDir(), TRAFFIC_CSV_FILE);
+            if (!csvFile.exists() || csvFile.length() == 0L) {
+                return "File CSV belum berisi data (" + csvFile.getAbsolutePath() + ").\nData otomatis dicatat setiap 1 menit saat Agent berjalan.";
+            }
+            List<String> lines = new ArrayList<>();
+            try (BufferedReader br = new BufferedReader(new FileReader(csvFile))) {
+                String line;
+                while ((line = br.readLine()) != null) {
+                    if (!line.trim().isEmpty()) lines.add(line);
+                }
+            }
+            if (lines.isEmpty()) return "File CSV kosong.";
+            StringBuilder sb = new StringBuilder();
+            sb.append("# File: ").append(csvFile.getAbsolutePath()).append("\n");
+            sb.append(lines.get(0)).append("\n");
+            int start = Math.max(1, lines.size() - maxLines);
+            for (int i = start; i < lines.size(); i++) {
+                sb.append(lines.get(i)).append("\n");
+            }
+            return sb.toString();
+        } catch (Throwable t) {
+            return "Gagal membaca CSV: " + t.getMessage();
+        }
+    }
+
+    public static String formatBytesHuman(long bytes) {
+        if (bytes >= 1_073_741_824L) {
+            return String.format(Locale.US, "%.2f GB", bytes / 1_073_741_824.0);
+        } else if (bytes >= 1_048_576L) {
+            return String.format(Locale.US, "%.2f MB", bytes / 1_048_576.0);
+        } else {
+            return String.format(Locale.US, "%.2f KB", bytes / 1024.0);
+        }
+    }
+
+    public static String formatRateHuman(long bps) {
+        if (bps >= 1_048_576L) {
+            return String.format(Locale.US, "%.2f MB/s", bps / 1_048_576.0);
+        } else if (bps >= 1024L) {
+            return String.format(Locale.US, "%.2f KB/s", bps / 1024.0);
+        } else {
+            return String.format(Locale.US, "%d B/s", bps);
+        }
     }
 
     private static AppCountSnapshot cachedAppCounts = null;
@@ -375,16 +554,16 @@ public class DeviceMetrics {
         BatterySnapshot bs = readBattery(ctx, cfg);
         RamStorageSnapshot rs = readRamStorage(ctx);
         WifiSnapshot ws = readWifi(ctx);
+        NetworkTrafficSnapshot nt = sampleNetworkTraffic(ctx, ws.ip, ws.ssid);
 
         JSONArray checks = new JSONArray();
 
-        // 1. Health_Battery
-        int batState = (bs.healthPct < 20.0 || ("Discharging".equals(bs.statusText) && bs.levelPct <= 10)) ? 2
-                : (bs.healthPct < 40.0 || ("Discharging".equals(bs.statusText) && bs.levelPct <= 20)) ? 1 : 0;
+        // 1. Health_Battery (Standar Mobile PDA WMS: OK >= 60%, Warning 40% s.d. 59%, Critical < 40%)
+        int batState = bs.healthPct < 40.0 ? 2 : (bs.healthPct < 60.0 ? 1 : 0);
         String batLbl = batState == 2 ? "CRITICAL" : batState == 1 ? "WARNING" : "OK";
         addCheck(checks, batState, "Health_Battery",
                 String.format(Locale.US,
-                        "battery_level=%d%%|battery_health=%.1f%%|battery_cycles=%d|battery_temp=%.1f|battery_voltage=%.2f|battery_current=%d",
+                        "battery_level=%d%%|battery_health=%.1f%%;60;40|battery_cycles=%d|battery_temp=%.1f|battery_voltage=%.2f|battery_current=%d",
                         bs.levelPct, bs.healthPct, bs.cycles, bs.tempC, bs.voltageV, bs.currentMa),
                 String.format(Locale.US,
                         "Status : %s | Level : %d%% (%s) | Real Health : %.1f%% | Cycles : %d | Full Capacity : %.0f mAh | Design Spec : %.0f mAh | Current Charge : %.0f mAh | Temp : %.1f C | Voltage : %.2f V | Current : %d mA | Calculation : %s",
@@ -401,15 +580,31 @@ public class DeviceMetrics {
                         Build.MANUFACTURER, Build.MODEL, profile, Build.VERSION.RELEASE, Build.VERSION.SDK_INT, uptimeStr),
                 null, null);
 
-        // 3. WiFi_Status
-        int wifiState = "Disconnected".equals(ws.status) ? 1 : (ws.rssiDbm != 0 && ws.rssiDbm < -82 ? 1 : 0);
-        String wifiLbl = wifiState == 0 ? "OK" : "WARNING";
+        // 3. WiFi_Status (Standar Mobile PDA WMS: OK <=70dBm [>=-70], Warning >71 & <=80 [-71 s.d. -80], Critical >80 [<-80] / Disconnected)
+        int wifiState;
+        if ("Disconnected".equals(ws.status) || (ws.rssiDbm != 0 && ws.rssiDbm < -80)) {
+            wifiState = 2;
+        } else if (ws.rssiDbm != 0 && ws.rssiDbm < -70) {
+            wifiState = 1;
+        } else {
+            wifiState = 0;
+        }
+        String wifiLbl = wifiState == 2 ? "CRITICAL" : wifiState == 1 ? "WARNING" : "OK";
         addCheck(checks, wifiState, "WiFi_Status",
-                String.format(Locale.US, "wifi_rssi=%ddBm|wifi_speed=%d|wifi_roam_1h=%d", ws.rssiDbm, ws.linkSpeedMbps, ws.roam1h),
+                String.format(Locale.US, "wifi_rssi=%ddBm;-71;-81|wifi_speed=%d|wifi_roam_1h=%d", ws.rssiDbm, ws.linkSpeedMbps, ws.roam1h),
                 String.format(Locale.US,
                         "Status : %s | SSID : %s | AP BSSID : %s (%s) | Band : %s | Roaming : %dx/1h (Total %dx, Last %s) | Signal : %d dBm | Link Speed : %d Mbps | IP : %s",
                         wifiLbl, ws.ssid, ws.bssid, ws.vendor, ws.bandChannel,
                         ws.roam1h, ws.roamTotal, ws.lastRoam, ws.rssiDbm, ws.linkSpeedMbps, ws.ip),
+                null, null);
+
+        // 4. Info_Network (Standar Mobile PDA WMS: Mengetahui trafik network & log file CSV, selalu Status OK = 0)
+        addCheck(checks, 0, "Info_Network",
+                String.format(Locale.US, "in=%dc|out=%dc|rx_rate=%d|tx_rate=%d",
+                        nt.rxTotalBytes, nt.txTotalBytes, nt.rxRateBps, nt.txRateBps),
+                String.format(Locale.US,
+                        "Status : OK | IP Address : %s | Total Download : %s | Total Upload : %s | RX Rate : %s | TX Rate : %s | CSV : %s",
+                        ws.ip, nt.rxTotalHuman, nt.txTotalHuman, nt.rxRateHuman, nt.txRateHuman, TRAFFIC_CSV_FILE),
                 null, null);
 
         // 4. RAM_Usage (cached 1800s)

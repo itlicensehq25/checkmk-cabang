@@ -325,6 +325,8 @@ public class MainActivity extends Activity {
         netBtns.setPadding(0, dp(10), 0, 0);
         Button btnLog = makeActionButton("VIEW PING LOG");
         btnLog.setOnClickListener(v -> showPingLogDialog());
+        Button btnCsv = makeActionButton("TRAFFIC CSV");
+        btnCsv.setOnClickListener(v -> showTrafficCsvDialog());
         Button btnPingNow = makeActionButton("PING 4X NOW");
         btnPingNow.setOnClickListener(v -> {
             startAgentService(CheckmkAgentService.ACTION_PING_NOW);
@@ -332,7 +334,10 @@ public class MainActivity extends Activity {
         });
         netBtns.addView(btnLog, new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
         View spacer = new View(this);
-        netBtns.addView(spacer, new LinearLayout.LayoutParams(dp(8), 1));
+        netBtns.addView(spacer, new LinearLayout.LayoutParams(dp(6), 1));
+        netBtns.addView(btnCsv, new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
+        View spacer2 = new View(this);
+        netBtns.addView(spacer2, new LinearLayout.LayoutParams(dp(6), 1));
         netBtns.addView(btnPingNow, new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
         cNet.bodyLayout.addView(netBtns);
 
@@ -522,14 +527,16 @@ public class MainActivity extends Activity {
                 rs.storagePct, rs.storageUsedGb, rs.storageFreeGb, rs.storageTotalGb));
 
         DeviceMetrics.WifiSnapshot ws = DeviceMetrics.readWifi(this);
+        DeviceMetrics.NetworkTrafficSnapshot nt = DeviceMetrics.peekNetworkTraffic(this);
         txtWifiSummary.setText(String.format(Locale.US,
                 "%s  •  %d dBm  •  Roam %dx/1h",
                 ws.ssid, ws.rssiDbm, ws.roam1h));
         txtWifiPingDetails.setText(String.format(Locale.US,
-                "Wi-Fi        : %s\nSSID         : %s\nAP BSSID     : %s (%s)\nBand / Ch    : %s\nAP Roaming   : %dx/1h (Total %dx)\nLast Roam    : %s\nSignal/Speed : %d dBm  •  %d Mbps\nLocal IP     : %s\nPing Target 1: 192.168.122.10 (Server Lokal)\nPing Target 2: 8.8.8.8 (Internet)\nPing Target 3: %s (Gateway Cabang)",
+                "Wi-Fi        : %s\nSSID         : %s\nAP BSSID     : %s (%s)\nBand / Ch    : %s\nAP Roaming   : %dx/1h (Total %dx)\nLast Roam    : %s\nSignal/Speed : %d dBm  •  %d Mbps\nLocal IP     : %s\nTraffic DL/UL: %s (%s) / %s (%s)\nTraffic CSV  : %s\nPing Target 1: 192.168.122.10 (Server Lokal)\nPing Target 2: 8.8.8.8 (Internet)\nPing Target 3: %s (Gateway Cabang)",
                 ws.status, ws.ssid, ws.bssid, ws.vendor, ws.bandChannel,
                 ws.roam1h, ws.roamTotal, ws.lastRoam, ws.rssiDbm, ws.linkSpeedMbps,
-                ws.ip, gw.isEmpty() ? "(auto)" : gw));
+                ws.ip, nt.rxTotalHuman, nt.rxRateHuman, nt.txTotalHuman, nt.txRateHuman,
+                DeviceMetrics.TRAFFIC_CSV_FILE, gw.isEmpty() ? "(auto)" : gw));
 
         if (btnFixWifiLocation != null) {
             boolean fineGranted = DeviceMetrics.hasFineLocationPermission(this);
@@ -589,6 +596,27 @@ public class MainActivity extends Activity {
                 .setTitle("Log Ping Lokal 3-Baris (Retensi 30 Hari CCTV)")
                 .setView(sv)
                 .setPositiveButton("PING 4X NOW", (d, w) -> startAgentService(CheckmkAgentService.ACTION_PING_NOW))
+                .setNegativeButton("CLOSE", null)
+                .show();
+    }
+
+    private void showTrafficCsvDialog() {
+        String csv = DeviceMetrics.readTrafficCsvTail(this, 150);
+
+        TextView tv = new TextView(this);
+        tv.setText(csv);
+        tv.setTextColor(TEXT_PRIMARY);
+        tv.setTypeface(Typeface.MONOSPACE);
+        tv.setTextSize(10.5f);
+        tv.setPadding(dp(12), dp(12), dp(12), dp(12));
+
+        ScrollView sv = new ScrollView(this);
+        sv.setBackgroundColor(BG_DARK);
+        sv.addView(tv);
+
+        new AlertDialog.Builder(this)
+                .setTitle("Info Network — Traffic Log CSV (network_traffic.csv)")
+                .setView(sv)
                 .setNegativeButton("CLOSE", null)
                 .show();
     }

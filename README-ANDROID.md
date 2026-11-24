@@ -161,7 +161,7 @@ flowchart TD
 
 ---
 
-## 6. Daftar 14 Service Checkmk yang Dihasilkan APK Android
+## 6. Daftar 15 Service Checkmk yang Dihasilkan APK Android
 
 1. **`Check_MK`** — Status eksekusi pull & waktu respons agen.
 2. **`Check_MK Agent`** — Informasi versi `Agen BMS : 1.3.8` & OS `android`.
@@ -169,14 +169,15 @@ flowchart TD
 4. **`Check_MK HW/SW Inventory`** — Inventaris CPU ARM/x86, RAM, kapasitas flash internal (`mmcblk0`), versi Android, & seluruh paket APK terinstal (cache 6 jam).
 5. **`Agent_Status`** — Statistik pull diterima/ditolak, IP server Checkmk penarik terakhir, dan mode akses jaringan.
 6. **`Android_Info`** — Pabrikan, model perangkat, versi Android, level SDK, dan *uptime*.
-7. **`Health_Battery`** — Ringkasan 1-baris lengkap: persentase baterai, status charging/discharging, *Real Health (%)*, jumlah siklus (*cycles*), kapasitas penuh aktual vs desain (`mAh`), suhu (`°C`), voltase (`V`), dan arus (`mA`).
-8. **`Ping_8.8.8.8`** — Monitoring ping Internet 4x/menit: grafik **`Ping loss 1m`** (`ping_loss_1m` `0%–100%` real-time per menit), grafik **`Packet loss`** (`pl` rata-rata 1 jam), grafik **`Round trip average`** (`rta`, `rtmin`, `rtmax`), serta daftar jam putus 24 jam terakhir (*terbaru dulu*).
-9. **`Ping_192.168.122.10`** — Monitoring ping Server Lokal 4x/menit (grafik `ping_loss_1m`, `pl` 1 jam, `rta`, & daftar jam putus 24 jam).
-10. **`Ping_Gateway`** — Monitoring ping IP Gateway Wi-Fi Cabang 4x/menit (tetap merekam `100%` loss saat Wi-Fi drop berkat cache `last_detected_gateway_ip`).
-11. **`RAM_Usage`** — Persentase & kapasitas RAM terpakai/bebas/total (cache 30 menit, `WARN` 85%, `CRIT` 95%).
-12. **`Storage_Usage`** — Persentase & kapasitas penyimpanan internal terpakai/bebas/total (cache 24 jam, `WARN` 85%, `CRIT` 95%).
-13. **`Transport_Status`** — Status jalur komunikasi Hybrid (`PULL` primary + `PUSH HTTP(S)` backup).
-14. **`WiFi_Status`** — Status koneksi Wi-Fi, SSID, BSSID & vendor AP (`UniFi`/`MikroTik`/`Aruba`/`Cisco`), pita frekuensi & kanal (`2.4GHz`/`5GHz`/`6GHz`), frekuensi roaming 1 jam terakhir (`wifi_roam_1h`), kekuatan sinyal (`dBm`), kecepatan link (`Mbps`), dan IP lokal.
+7. **`Health_Battery`** — Ringkasan 1-baris lengkap: persentase baterai, status charging/discharging, *Real Health (%)* (`OK >= 60%`, `WARN 40–59%`, `CRIT < 40%`), jumlah siklus (*cycles*), kapasitas penuh aktual vs desain (`mAh`), suhu (`°C`), voltase (`V`), dan arus (`mA`).
+8. **`Info_Network`** — Monitoring trafik jaringan (`Total Download`, `Total Upload`, `RX Rate`, `TX Rate`) beserta pencatatan otomatis setiap menit ke berkas **`network_traffic.csv`** (dapat dibuka langsung lewat tombol `TRAFFIC CSV` di aplikasi).
+9. **`Ping_8.8.8.8`** — Monitoring ping Internet 4x/menit: grafik **`Ping loss 1m`** (`ping_loss_1m` `0%–100%` real-time per menit), grafik **`Packet loss`** (`pl` rata-rata 1 jam), grafik **`Round trip average`** (`rta`, `rtmin`, `rtmax`), serta daftar jam putus 24 jam terakhir (*terbaru dulu*).
+10. **`Ping_192.168.122.10`** — Monitoring ping Server Lokal 4x/menit (grafik `ping_loss_1m`, `pl` 1 jam, `rta`, & daftar jam putus 24 jam).
+11. **`Ping_Gateway`** — Monitoring ping IP Gateway Wi-Fi Cabang 4x/menit (tetap merekam `100%` loss saat Wi-Fi drop berkat cache `last_detected_gateway_ip`).
+12. **`RAM_Usage`** — Persentase & kapasitas RAM terpakai/bebas/total (cache 30 menit, `OK < 85%`, `WARN >= 85% s.d. < 95%`, `CRIT >= 95%`).
+13. **`Storage_Usage`** — Persentase & kapasitas penyimpanan internal terpakai/bebas/total (cache 24 jam, `OK < 85%`, `WARN >= 85% s.d. < 95%`, `CRIT >= 95%`).
+14. **`Transport_Status`** — Status jalur komunikasi Hybrid (`PULL` primary + `PUSH HTTP(S)` backup).
+15. **`WiFi_Status`** — Status koneksi Wi-Fi, SSID, BSSID & vendor AP (`UniFi`/`MikroTik`/`Aruba`/`Cisco`), pita frekuensi & kanal (`2.4GHz`/`5GHz`/`6GHz`), frekuensi roaming 1 jam terakhir (`wifi_roam_1h`), kekuatan sinyal (`OK <=70 dBm [>= -70 dBm]`, `WARN -71 s.d. -80 dBm`, `CRIT < -80 dBm / Disconnected`), kecepatan link (`Mbps`), dan IP lokal.
 
 ---
 
@@ -186,7 +187,7 @@ Android tidak menggunakan `cron` sistem seperti Linux. Sebagai gantinya, agen me
 
 | Tugas / Job | Mekanisme & Lokasi Kode | Interval Eksekusi | Cache / Retensi | Keterangan |
 | :--- | :--- | :--- | :--- | :--- |
-| **Siklus Utama Telemetri & Config** | `CheckmkAgentService.java` (`scheduleAtFixedRate`) | **Setiap 60 detik** (1 menit) | Real-time | Sinkronisasi `AgentConfig` ke Rust, membaca `Health_Battery`, `WiFi_Status` (+ deteksi roaming AP), `Android_Info`, `RAM_Usage`, dan `Storage_Usage`. |
+| **Siklus Utama Telemetri, Trafik CSV & Config** | `CheckmkAgentService.java` (`scheduleAtFixedRate`) | **Setiap 60 detik** (1 menit) | Real-time (`network_traffic.csv` maks 5 MB rolling) | Sinkronisasi `AgentConfig` ke Rust, membaca `Health_Battery`, `WiFi_Status`, `Info_Network` (+ tulis `network_traffic.csv`), `Android_Info`, `RAM_Usage`, dan `Storage_Usage`. |
 | **Ping Paralel 3 Target (4x/menit)** | `NativeBridge.collectPingSample` -> `ping.rs` (`std::thread::scope`) | **Setiap 60 detik** (4 paket/target, timeout 2 dtk) | Buffer **1 jam** (60 sampel = 240 pkt/target) | Menjalankan `/system/bin/ping -c 4 -W 2` secara paralel ke `192.168.122.10`, `8.8.8.8`, dan `Gateway Cabang`. |
 | **Rotasi & Pembersihan Log Ping (CCTV 30 Hari)** | `ping.rs` (`prune_log_if_due`) | **Setiap 1 jam** (3.600 detik) | **30 hari** atau batas **35 MB** (`ping_history.log`) | Otomatis membuang baris log yang lebih tua dari 30 hari atau saat ukuran file melebihi 35 MB. |
 | **Cache `RAM_Usage`** | `DeviceMetrics.java` (`<<<local:cached(...,1800)>>>`) | Evaluasi 1 menit, *cache* Checkmk **30 menit** (1.800 dtk) | 30 menit | Mengurangi fluktuasi palsu pemakaian RAM di sisi server Checkmk. |
@@ -198,21 +199,22 @@ Android tidak menggunakan `cron` sistem seperti Linux. Sebagai gantinya, agen me
 
 ---
 
-## 8. Matriks Standardisasi Threshold & Alerting Khusus Android
+## 8. Matriks Standardisasi Threshold & Alerting Khusus Android (Standar Mobile PDA WMS)
 
-| Service Checkmk | Tipe / Cache | Metrik (Perfdata) | **OK (0)** | **WARNING (1)** | **CRITICAL (2)** |
+| Service Checkmk | Tipe / Cache | Metrik (Perfdata) | **Status OK (0)** | **Status Warning (1)** | **Status Critical (2)** |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| **`Agent_Status`** | Real-time (60s) | `connections`, `rejected` | Agen aktif & menerima Pull TCP `6556` | — *(tidak pernah WARN)* | — *(jika agen mati, Checkmk aktifkan CRIT pada `Check_MK` timeout)* |
+| **`Health_Battery`** *(Battery Health)* | Real-time (60s) | `battery_level`, `battery_health` (`%;60;40`), `battery_cycles`, `battery_temp`, `battery_voltage`, `battery_current` | **`>= 60%`** | **`40% s.d. 59%`** (`>= 40%` dan `< 60%`) | **`< 40%`** |
+| **`RAM_Usage`** | Cached **30 mnt** | `ram_used` (`%;85;95`) | **`< 85%`** | **`>= 85% s.d. < 95%`** | **`>= 95%`** |
+| **`Storage_Usage`** | Cached **24 jam** | `storage_used` (`%;85;95`) | **`< 85%`** | **`>= 85% s.d. < 95%`** | **`>= 95%`** |
+| **`WiFi_Status`** *(Wifi Signal)* | Real-time (60s) | `wifi_rssi` (`dBm;-71;-81`), `wifi_speed`, `wifi_roam_1h` | **`<= 70 dBm`** (`RSSI >= -70 dBm`, mis. `-55` s.d. `-70 dBm`) | **`> 71 & <= 80`** (`RSSI -71 dBm` s.d. `-80 dBm`) | **`> 80`** (`RSSI < -80 dBm`, mis. `-81 dBm` ke bawah) **atau** `Disconnected` |
+| **`Info_Network`** | Real-time (60s) + CSV | `in`, `out`, `rx_rate`, `tx_rate` | **Mengetahui trafik network (`DL/UL` & `RX/TX Rate`) + log file `network_traffic.csv`** | **—** | **—** |
+| **`Agent_Status`** | Real-time (60s) | `connections`, `rejected` | Agen aktif & menerima Pull TCP `6556` | — | — |
 | **`Android_Info`** | Real-time (60s) | `-` | Selalu **OK** (model, OS, SDK, uptime) | — | — |
-| **`Health_Battery`** | Real-time (60s) | `battery_level`, `battery_health`, `battery_cycles`, `battery_temp`, `battery_voltage`, `battery_current` | `Real Health >= 40%` **dan** (Charging/Full **atau** `Level > 20%`) | `Real Health < 40%` **atau** (`Discharging` & `Level <= 20%`) | `Real Health < 20%` **atau** (`Discharging` & `Level <= 10%`) |
-| **`WiFi_Status`** | Real-time (60s) | `wifi_rssi`, `wifi_speed`, `wifi_roam_1h` | Terhubung Wi-Fi **dan** sinyal `RSSI >= -82 dBm` | Wi-Fi `Disconnected` **atau** sinyal lemah `RSSI < -82 dBm` | — *(tidak pernah CRIT)* |
-| **`RAM_Usage`** | Cached **30 mnt** | `ram_used` (`%;85;95`) | Pemakaian RAM `< 85%` | Pemakaian RAM `>= 85%` dan `< 95%` | Pemakaian RAM `>= 95%` |
-| **`Storage_Usage`** | Cached **24 jam** | `storage_used` (`%;85;95`) | Pemakaian Storage `< 85%` | Pemakaian Storage `>= 85%` dan `< 95%` | Pemakaian Storage `>= 95%` |
 | **`Ping_Gateway`** *(Gateway Cabang)* | Ping 4x/1m, report **1 jam** | `rta`, `pl` (`20/50%`), `rtmin`, `rtmax`, `ping_loss_1m` (`25/100%`) | `Loss 1h < 20%` **dan** `Avg RTT < 50 ms` | `Loss 1h >= 20%` **atau** `Avg RTT >= 50 ms` | `Total RX = 0` **atau** `Loss 1h >= 50%` **atau** `Avg RTT >= 150 ms` |
 | **`Ping_192.168.122.10`** *(Server Lokal)* | Ping 4x/1m, report **1 jam** | `rta`, `pl` (`20/50%`), `rtmin`, `rtmax`, `ping_loss_1m` (`25/100%`) | `Loss 1h < 20%` **dan** `Avg RTT < 100 ms` | `Loss 1h >= 20%` **atau** `Avg RTT >= 100 ms` | `Total RX = 0` **atau** `Loss 1h >= 50%` **atau** `Avg RTT >= 250 ms` |
 | **`Ping_8.8.8.8`** *(Internet)* | Ping 4x/1m, report **1 jam** | `rta`, `pl` (`20/50%`), `rtmin`, `rtmax`, `ping_loss_1m` (`25/100%`) | `Loss 1h < 20%` **dan** `Avg RTT < 150 ms` | `Loss 1h >= 20%` **atau** `Avg RTT >= 150 ms` | `Total RX = 0` **atau** `Loss 1h >= 50%` **atau** `Avg RTT >= 300 ms` |
-| **`Transport_Status`** | Cached **3 jam** | `push_success`, `push_failure` | Push tidak aktif **atau** Push terakhir sukses tanpa error | Push aktif **dan** pengiriman Push terakhir gagal (ada `last_push_error`) | — *(tidak pernah CRIT karena Pull tetap primary)* |
-| **`Check_MK HW/SW Inventory`** | Active Check (cache 6 jam di agen) | — | Seluruh section (`lnx_uname`, `lnx_distro`, `lnx_cpuinfo`, `dmidecode`, `lnx_block_devices`, `lnx_packages`) ter-parse valid | Gagal parsing salah satu section | — |
+| **`Transport_Status`** | Cached **3 jam** | `push_success`, `push_failure` | Push tidak aktif **atau** Push terakhir sukses tanpa error | Push aktif **dan** pengiriman Push terakhir gagal | — |
+| **`Check_MK HW/SW Inventory`** | Active Check (cache 6 jam di agen) | — | Seluruh section ter-parse valid | Gagal parsing salah satu section | — |
 
 > **Catatan Grafik `ping_loss_1m`:** Pada seluruh service `Ping_*`, status alert (`OK/WARN/CRIT`) dihitung dari **rata-rata 1 jam (`pl` & `rta`)** agar tidak *flapping* saat PDA berpindah Access Point sesaat, sedangkan metrik **`ping_loss_1m`** (`0%–100%`, garis referensi WARN `25%` / CRIT `100%`) direkam setiap menit khusus untuk visualisasi grafik koneksi putus secara *real-time* beserta rincian durasi putus 24 jam terakhir.
 
